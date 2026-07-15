@@ -19,6 +19,7 @@ target_sources(PixelBender PRIVATE
     Source/PluginScanner.cpp
     Source/PluginHost.cpp
     Source/RawImage.cpp
+    Source/WaveformView.cpp
 )
 
 target_compile_definitions(PixelBender PRIVATE

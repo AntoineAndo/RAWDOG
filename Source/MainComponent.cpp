@@ -10,7 +10,7 @@ void MainComponent::PluginListModel::paintListBoxItem(int rowNumber, juce::Graph
 
     if (auto* desc = getType(rowNumber))
     {
-        g.setColour(juce::Colours::black);
+        g.setColour(enabled ? juce::Colours::white : juce::Colours::grey);
         g.drawText(desc->name + "  —  " + desc->manufacturerName + "  (" + desc->pluginFormatName + ")",
                     4, 0, width - 8, height, juce::Justification::centredLeft);
     }
@@ -22,10 +22,13 @@ MainComponent::MainComponent()
     addAndMakeVisible(exportImageButton);
     addAndMakeVisible(resetButton);
     addAndMakeVisible(imagePreview);
+    addAndMakeVisible(waveformView);
+    addAndMakeVisible(waveformZoomSlider);
+    addAndMakeVisible(waveformZoomLabel);
+    addAndMakeVisible(horizontalZoomSlider);
+    addAndMakeVisible(horizontalScrollBar);
     addAndMakeVisible(pluginListBox);
     addAndMakeVisible(rescanButton);
-    addAndMakeVisible(loadPluginButton);
-    addAndMakeVisible(openEditorButton);
     addAndMakeVisible(statusLabel);
 
     imagePreview.setImagePlacement(juce::RectanglePlacement::centred);
@@ -34,12 +37,27 @@ MainComponent::MainComponent()
     exportImageButton.onClick = [this] { exportImageClicked(); };
     resetButton.onClick = [this] { resetClicked(); };
     rescanButton.onClick = [this] { refreshPluginList(); };
-    loadPluginButton.onClick = [this] { loadPluginClicked(); };
-    openEditorButton.onClick = [this] { openEditorClicked(); };
+
+    waveformZoomSlider.setRange(1.0, 20.0, 0.1);
+    waveformZoomSlider.setValue(1.0);
+    waveformZoomSlider.onValueChange = [this] { waveformView.setVerticalZoom((float) waveformZoomSlider.getValue()); };
+    waveformZoomLabel.setJustificationType(juce::Justification::centred);
+    waveformZoomLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+
+    horizontalZoomSlider.setRange(1.0, 200.0, 0.1);
+    horizontalZoomSlider.setSkewFactorFromMidPoint(10.0);
+    horizontalZoomSlider.setValue(1.0);
+    horizontalZoomSlider.onValueChange = [this] { waveformView.setHorizontalZoom((float) horizontalZoomSlider.getValue()); };
+
+    horizontalScrollBar.addListener(this);
+    waveformView.onViewChanged = [this] { syncScrollBarToView(); };
 
     pluginListBox.setModel(&listModel);
+    pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
+    listModel.onDoubleClick = [this](int row) { loadAndOpenPlugin(row); };
 
-    setStatus("Load a BMP or PNM image, load a plugin, then open its editor to tweak and apply.");
+    setStatus("Load a BMP or PNM image, then double-click a plugin to load it and tweak/apply.");
+    updatePluginListEnablement();
 
     setSize(900, 700);
 
@@ -89,6 +107,8 @@ void MainComponent::loadImageClicked()
             originalImage = std::move(image);
             workingImage = std::make_unique<RawImage>(*originalImage);
             updatePreview();
+            updateWaveform(true);
+            updatePluginListEnablement();
             setStatus("Loaded " + file.getFileName() + " (" + juce::String(workingImage->pixelBytes.getSize()) + " bytes of pixel data).");
         });
 }
@@ -117,14 +137,11 @@ void MainComponent::exportImageClicked()
         });
 }
 
-void MainComponent::loadPluginClicked()
+void MainComponent::loadAndOpenPlugin(int row)
 {
-    auto* desc = listModel.getType(pluginListBox.getSelectedRow());
+    auto* desc = listModel.getType(row);
     if (desc == nullptr)
-    {
-        setStatus("Select a plugin in the list first.");
         return;
-    }
 
     if (currentPlugin != nullptr)
     {
@@ -143,6 +160,7 @@ void MainComponent::loadPluginClicked()
     }
 
     setStatus("Loaded plugin: " + desc->name);
+    openEditorClicked();
 }
 
 void MainComponent::openEditorClicked()
@@ -192,11 +210,32 @@ void MainComponent::applyClicked()
     }
 
     auto buffer = SampleFormat::bytesToBuffer(workingImage->pixelBytes);
-    PluginHost::processWholeBuffer(*currentPlugin, buffer, blockSize);
+    const auto selection = waveformView.getSelectionSampleRange();
+
+    if (! selection.isEmpty())
+    {
+        const int start = selection.getStart();
+        const int length = selection.getLength();
+
+        juce::AudioBuffer<float> selectedBuffer(1, length);
+        selectedBuffer.copyFrom(0, 0, buffer, 0, start, length);
+
+        PluginHost::processWholeBuffer(*currentPlugin, selectedBuffer, blockSize);
+
+        buffer.copyFrom(0, start, selectedBuffer, 0, 0, length);
+
+        setStatus("Applied " + currentPlugin->getName() + " to selection [" + juce::String(start) + ", " + juce::String(start + length) + ").");
+    }
+    else
+    {
+        PluginHost::processWholeBuffer(*currentPlugin, buffer, blockSize);
+        setStatus("Applied " + currentPlugin->getName() + " to the whole buffer.");
+    }
+
     SampleFormat::bufferToBytes(buffer, workingImage->pixelBytes);
 
     updatePreview();
-    setStatus("Applied " + currentPlugin->getName() + " to the whole buffer.");
+    updateWaveform();
 }
 
 void MainComponent::resetClicked()
@@ -206,6 +245,7 @@ void MainComponent::resetClicked()
 
     workingImage = std::make_unique<RawImage>(*originalImage);
     updatePreview();
+    updateWaveform(true);
     setStatus("Reset to original image.");
 }
 
@@ -215,9 +255,55 @@ void MainComponent::updatePreview()
         imagePreview.setImage(workingImage->toJuceImage());
 }
 
+void MainComponent::updateWaveform(bool resetView)
+{
+    if (workingImage == nullptr)
+        return;
+
+    waveformView.setBuffer(SampleFormat::bytesToBuffer(workingImage->pixelBytes), resetView);
+
+    if (resetView)
+        horizontalZoomSlider.setValue(1.0, juce::dontSendNotification);
+}
+
+void MainComponent::updatePluginListEnablement()
+{
+    const bool hasImage = workingImage != nullptr;
+    pluginListBox.setEnabled(hasImage);
+    listModel.setEnabled(hasImage);
+    pluginListBox.repaint();
+
+    waveformZoomSlider.setEnabled(hasImage);
+    horizontalZoomSlider.setEnabled(hasImage);
+    horizontalScrollBar.setEnabled(hasImage);
+}
+
+void MainComponent::syncScrollBarToView()
+{
+    const int numSamples = waveformView.getNumSamples();
+
+    horizontalScrollBar.setRangeLimits(0.0, (double) juce::jmax(1, numSamples));
+    horizontalScrollBar.setCurrentRange((double) waveformView.getViewStartSample(),
+                                         (double) waveformView.getViewLengthSamples(),
+                                         juce::dontSendNotification);
+}
+
+void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
+{
+    if (scrollBarThatHasMoved == &horizontalScrollBar)
+        waveformView.setViewStart((int) newRangeStart);
+}
+
 void MainComponent::resized()
 {
     auto area = getLocalBounds().reduced(8);
+
+    auto leftColumn = area.removeFromLeft(260);
+    area.removeFromLeft(8);
+
+    rescanButton.setBounds(leftColumn.removeFromTop(30));
+    leftColumn.removeFromTop(8);
+    pluginListBox.setBounds(leftColumn);
 
     auto topRow = area.removeFromTop(30);
     loadImageButton.setBounds(topRow.removeFromLeft(140));
@@ -228,21 +314,26 @@ void MainComponent::resized()
 
     area.removeFromTop(8);
 
-    auto bottomSection = area.removeFromBottom(230);
+    auto statusArea = area.removeFromBottom(24);
+    area.removeFromBottom(8);
+    auto waveformSection = area.removeFromBottom(140);
+    area.removeFromBottom(8);
 
     imagePreview.setBounds(area);
 
-    auto listArea = bottomSection.removeFromTop(150);
-    pluginListBox.setBounds(listArea);
+    auto waveformTop = waveformSection.removeFromTop(100);
+    waveformSection.removeFromTop(4);
 
-    bottomSection.removeFromTop(8);
-    auto buttonRow = bottomSection.removeFromTop(30);
-    rescanButton.setBounds(buttonRow.removeFromLeft(140));
-    buttonRow.removeFromLeft(8);
-    loadPluginButton.setBounds(buttonRow.removeFromLeft(180));
-    buttonRow.removeFromLeft(8);
-    openEditorButton.setBounds(buttonRow.removeFromLeft(160));
+    auto zoomArea = waveformTop.removeFromRight(40);
+    waveformTop.removeFromRight(8);
+    waveformZoomLabel.setBounds(zoomArea.removeFromTop(16));
+    waveformZoomSlider.setBounds(zoomArea);
+    waveformView.setBounds(waveformTop);
 
-    bottomSection.removeFromTop(8);
-    statusLabel.setBounds(bottomSection);
+    auto horizontalZoomArea = waveformSection.removeFromLeft(120);
+    waveformSection.removeFromLeft(8);
+    horizontalZoomSlider.setBounds(horizontalZoomArea);
+    horizontalScrollBar.setBounds(waveformSection);
+
+    statusLabel.setBounds(statusArea);
 }

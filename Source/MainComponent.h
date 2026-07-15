@@ -3,8 +3,10 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginScanner.h"
 #include "RawImage.h"
+#include "WaveformView.h"
 
-class MainComponent : public juce::Component
+class MainComponent : public juce::Component,
+                      private juce::ScrollBar::Listener
 {
 public:
     MainComponent();
@@ -16,12 +18,17 @@ private:
     void refreshPluginList();
     void loadImageClicked();
     void exportImageClicked();
-    void loadPluginClicked();
+    void loadAndOpenPlugin(int row);
     void openEditorClicked();
     void applyClicked();
     void resetClicked();
     void updatePreview();
+    void updateWaveform(bool resetView = false);
+    void updatePluginListEnablement();
+    void syncScrollBarToView();
     void setStatus(const juce::String& text);
+
+    void scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
 
     static constexpr double sampleRate = 44100.0;
     static constexpr int blockSize = 512;
@@ -31,11 +38,14 @@ private:
     juce::TextButton loadImageButton { "Load Image..." };
     juce::TextButton exportImageButton { "Export Image..." };
     juce::TextButton rescanButton { "Rescan Plugins" };
-    juce::TextButton loadPluginButton { "Load Selected Plugin" };
-    juce::TextButton openEditorButton { "Open Plugin Editor" };
     juce::TextButton resetButton { "Reset to Original" };
+    juce::Slider waveformZoomSlider { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
+    juce::Label waveformZoomLabel { {}, "Zoom" };
+    juce::Slider horizontalZoomSlider { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
+    juce::ScrollBar horizontalScrollBar { false };
 
     juce::ImageComponent imagePreview;
+    WaveformView waveformView;
     juce::ListBox pluginListBox;
     juce::Label statusLabel;
 
@@ -52,10 +62,20 @@ private:
 
         int getNumRows() override { return cachedTypes.size(); }
         void paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
+        void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override
+        {
+            if (enabled && onDoubleClick != nullptr)
+                onDoubleClick(row);
+        }
+
+        void setEnabled(bool shouldBeEnabled) { enabled = shouldBeEnabled; }
+
+        std::function<void(int)> onDoubleClick;
 
     private:
         juce::KnownPluginList& knownPluginList;
         juce::Array<juce::PluginDescription> cachedTypes;
+        bool enabled = false;
     };
 
     PluginListModel listModel { scanner.getKnownPluginList() };
@@ -83,7 +103,7 @@ private:
 
     private:
         std::unique_ptr<juce::AudioProcessorEditor> editor;
-        juce::TextButton applyButton { "Apply to Whole Buffer" };
+        juce::TextButton applyButton { "Apply" };
     };
 
     class PluginWindow : public juce::DocumentWindow
