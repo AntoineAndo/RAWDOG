@@ -82,8 +82,18 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
 
 4. **`PluginScanner`** (`PluginScanner.h/.cpp`) — wraps
    `AudioPluginFormatManager` + `KnownPluginList`, scans the default VST3/AU search
-   paths. Verified against a real machine: found 44 plugins (2 user-installed VST3+AU
-   pairs, ~40 Apple built-in AUs).
+   paths on a background thread via a `juce::ThreadWithProgressWindow` subclass
+   (`ScanThread`), showing a progress bar/status label/Cancel button so the message
+   thread (and native menu bar) never blocks during a scan. Verified against a real
+   machine: found 44 plugins (2 user-installed VST3+AU pairs, ~40 Apple built-in AUs).
+   - **Scans are cached to disk, not repeated on every launch.** `loadCachedPluginList()`/
+     `saveCachedPluginListToDisk()` persist `KnownPluginList::createXml()`/
+     `recreateFromXml()` to `~/Library/Application Support/PixelBender/KnownPlugins.xml`.
+     `MainComponent`'s constructor tries loading that cache first; only a genuine
+     first-ever launch (no cache file yet) falls back to a real scan. "Rescan
+     Plugins" always does a real scan regardless, and re-saves the cache afterward —
+     this is the only way scanning happens after the first launch, per explicit user
+     request to stop rescanning automatically on every open.
 
 ### UI (all in `MainComponent`, the single content component of the app window)
 
@@ -93,17 +103,59 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   loads that plugin and immediately opens its editor — there's no separate
   "load"/"open editor" buttons anymore, that was a deliberate UX simplification
   after early feedback.
+  - **Favourites, tabs, and search** (`FavouritePluginsStore.h` +
+    `PluginListModel` additions in `MainComponent.h`/`.cpp`): each row has a
+    24px star column (★ filled/yellow when favourited, ☆ outline/grey
+    otherwise), hit-tested in `PluginListModel::listBoxItemClicked` and toggled
+    via `FavouritePluginsStore` (a `juce::ApplicationProperties`/`PropertiesFile`-
+    backed store, newline-joined identifier strings keyed by
+    `PluginDescription::createIdentifierString()`, immediate-write so a toggle
+    survives a hard quit). A `PluginFilterTabs` (`juce::TabbedButtonBar`, used
+    standalone rather than the heavier `TabbedComponent` since there's one
+    shared `ListBox` to filter, not separate content pages per tab) offers
+    **All / Favourites / By Vendor** — By Vendor groups `cachedTypes` into
+    collapsible accordion sections (`DisplayRow`/`displayRows`, rebuilt by
+    `rebuildDisplayRows()`, grouped strictly by iterating the already-filtered
+    `cachedTypes` so a vendor with zero search matches simply emits no header —
+    no extra filtering logic needed). A live `juce::TextEditor` search box
+    filters by name/manufacturer/format via `containsIgnoreCase`, combining
+    correctly with whichever tab is active. Favourites persist to disk; search
+    text and tab selection and per-vendor expand/collapse state are session-only.
+- **Resizable panel layout**: the whole window (list, plugin editor panel,
+  image preview, waveform) uses `juce::StretchableLayoutManager` +
+  `juce::StretchableLayoutResizerBar` for user-draggable dividers — a new
+  pattern for this codebase (previously all layout was fixed `Rectangle::removeFrom*`
+  carving). Three small container components hold each split's children and
+  own their own layout manager + divider: `LeftColumnPanel` (plugin list
+  stacked above the plugin editor panel; the divider only exists/renders when
+  a panel is open), `RightColumnPanel` (image preview stacked above the
+  waveform section), and `WaveformSectionPanel` (a plain, non-resizable
+  sub-layout for the waveform + its zoom controls, ported verbatim from the
+  old fixed-pixel layout). `MainComponent` itself splits `leftColumn`/`rightColumn`
+  horizontally. **Critical correctness rule, easy to get backwards**:
+  `setItemLayout()` is called once per manager (seeding min/preferred/max) —
+  never on every `resized()`/`layOutComponents()` call, or a user's drag
+  adjustment would snap back on every ordinary window resize. The one
+  deliberate exception is re-seeding a column's *preferred* size when a
+  genuinely new/different plugin panel opens (`LeftColumnPanel::setEditorPanel()`
+  re-seeds item 2 only on a real panel change, and `MainComponent::openEditorClicked()`
+  re-seeds the outer left/right split to the new plugin's editor width, capped
+  at 50% of the window via a *negative* max value — `juce::StretchableLayoutManager`
+  interprets negative min/max as a live-recomputed proportion of current total
+  size, not a one-time absolute pixel value, which is what makes the 50% cap
+  keep working correctly across window resizes without any extra code).
 - **Plugin editor panel** (`MainComponent::PluginEditorPanel`, a nested class in
   `MainComponent.h`): no longer a separate `DocumentWindow` popup — the plugin's
   real editor (`createEditorIfNeeded()`, or `GenericAudioProcessorEditor` as
-  fallback for plugins without a custom UI) is embedded in-place in a new column
-  between the plugin list and the image/waveform area, wrapped in a `juce::Viewport`
-  (editors vary wildly in size/aspect ratio, so the panel scrolls rather than
-  force-resizing the plugin's UI) with the column width clamped via
-  `juce::jlimit(220, 700, pluginEditorPanel->getPreferredWidth())`. An **"Apply"
-  button is docked underneath**, same as before, and remains the only way to
-  dismiss the panel (no separate Cancel/close) — clicking it commits and closes.
-  While the panel is open, tweaking the plugin's own parameters drives a **live,
+  fallback for plugins without a custom UI) is embedded in-place, wrapped in a
+  `juce::Viewport` (editors vary wildly in size/aspect ratio, so the panel
+  scrolls rather than force-resizing the plugin's UI — see the resizable-layout
+  bullet above for how the panel's column itself is sized). **"Apply" and
+  "Cancel" buttons are docked underneath side by side** (Cancel added after
+  Apply-only proved confusing — Cancel discards any unapplied live-preview
+  tweaks via `endLivePreviewSession(false)`, mirroring what already happens
+  when swapping to a different plugin without applying; both are still the
+  only ways to dismiss the panel). While the panel is open, tweaking the plugin's own parameters drives a **live,
   non-destructive preview**: `PluginParameterWatcher` (`PluginParameterWatcher.h`)
   listens via `juce::AudioProcessorListener` and coalesces bursts of parameter
   callbacks (which may arrive off the message thread) through `juce::AsyncUpdater`
@@ -154,10 +206,34 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
     clips harder without revealing structure. Horizontal zoom/scroll (narrowing the
     visible sample window) is what actually helps you find precise selection
     boundaries.
+  - **Resizable/movable selection**: a selection's left/right edges are
+    draggable resize handles (small grip marks drawn at each edge, a
+    left-right resize mouse cursor on hover, `handleGrabPixels = 6` hit-test
+    tolerance), and click-dragging the body of an existing selection (a
+    dragging-hand cursor) moves the whole thing while keeping its length —
+    both classified in `mouseDown` (`DragMode::resizingLeft/resizingRight/movingSelection`,
+    vs. the original `creatingSelection` for a drag on empty waveform) and
+    applied in `mouseDrag`. Resize clamps against the fixed opposite edge to
+    guarantee at least 1 sample of width (can't invert/collapse the
+    selection); move clamps to keep the whole selection within the buffer.
+    Every gesture — create, resize, or move — fires `onBeforeSelectionChange`
+    once up front, so all three remain a single Undo step and the live
+    preview highlight updates during the drag, exactly like creating always did.
 - **Selection → image highlight**: `RawImage::toJuceImage()` takes an optional
-  `juce::Range<int> highlightByteRange` and tints matching pixels toward yellow
-  (`Colour::interpolatedWith(yellow, 0.5f)`), reusing the exact same per-pixel loop
-  that already handles BMP/PNM layout differences — so the highlight is always
+  `juce::Range<int> highlightByteRange`. **This used to fill every selected
+  pixel with a 50% yellow blend**, but that made it impossible to judge a
+  plugin's actual live-preview result underneath the tint — it's now a
+  **thin (2px) outline around the selection's boundary only**, leaving
+  interior pixels completely untinted. The boundary test avoids an
+  `O(width × height × thickness²)` per-pixel neighbourhood scan: it
+  precomputes each screen row's selected *column* range once
+  (`std::vector<juce::Range<int>> rowSelection`, one `getIntersectionWith()`
+  call per row, converting a byte-range intersection to a column range via
+  integer division by `channels`), then each pixel's border test is an O(1)
+  left/right-edge distance check plus an O(`outlineThickness`) loop over
+  neighbouring rows for the top/bottom edge — down from
+  `O(thickness²)` per pixel to `O(thickness)`, reusing the exact same
+  per-pixel BMP/PNM layout loop as before, so the highlight/outline is always
   correctly positioned regardless of format. `toJuceImage()` is now a one-line
   forwarder to `toJuceImageFromBytes(pixelBytes, highlightByteRange)`, which reads
   an explicit `juce::MemoryBlock` instead of always reading `this->pixelBytes` —
@@ -196,7 +272,15 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   itself as the native macOS menu bar (`setMacMainMenu`/`setMacMainMenu(nullptr)` in
   ctor/dtor). Two top-level menus: **File** (Load Image, Export Image, Reset to
   Original, Rescan Plugins — these used to be toolbar buttons, moved to the menu on
-  request, which freed up layout space) and **Edit** (Undo).
+  request, which freed up layout space) and **Edit** (Undo, Redo).
+  - **Export Image always writes a PNG now**, regardless of whether the image
+    was loaded as BMP or PNM — `RawImage::writeToPngFile()` encodes
+    `toJuceImage()` (no highlight baked in) via `juce::PNGImageFormat`. This
+    replaced the original `writeToFile()`, which wrote the *original* format's
+    header+pixel bytes back out verbatim (and the format-matching
+    `getExportWildcard()`/`getDefaultExportExtension()` helpers that existed
+    solely to keep that verbatim writer's extension honest) — both removed as
+    dead code once every export became format-independent PNG.
   - **Gotcha already hit and fixed**: the native macOS menu does *not* reliably
     re-invoke `getMenuForIndex()` just because a submenu is reopened. Item
     enablement (grayed-out state) goes stale after the first render unless you
@@ -221,6 +305,27 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   the current selection.
 - *(user-requested polish, not in original milestone plan)* — resizable/fullscreen
   window, zoomable/pannable image preview, File/Edit native menu bar, Undo.
+- *(user-requested polish)* — Redo, with undo/redo snapshots now bundling the
+  waveform selection alongside pixel bytes; a whole selection drag/click
+  collapses to one undo entry via `onBeforeSelectionChange`.
+- *(user-requested polish)* — plugin editor embedded in-place (no more popup
+  `DocumentWindow`) with live, non-destructive preview as you tweak a
+  plugin's own parameters (`PluginParameterWatcher` + `AsyncUpdater` +
+  `computeProcessedPixelBytes()`), plus a Cancel button to discard tweaks.
+- *(user-requested polish)* — the whole window layout made user-resizable via
+  draggable dividers (`juce::StretchableLayoutManager`), replacing fixed
+  pixel-based carving.
+- *(user-requested polish)* — plugin favourites (★ toggle, persisted), All/
+  Favourites/By Vendor tabs, and a live plugin search box.
+- *(user-requested polish)* — plugin scan results cached to disk so the app
+  doesn't rescan on every launch, only on first-ever run or explicit "Rescan
+  Plugins."
+- *(user-requested polish)* — waveform selection gained resize handles and
+  drag-to-move; the image-preview highlight became a thin outline instead of
+  a full yellow tint, so the plugin's actual live-preview result stays
+  visible underneath.
+- *(user-requested polish)* — Export Image always writes a PNG now, regardless
+  of the original loaded format.
 
 ## What's NOT done yet (planned)
 
@@ -281,3 +386,22 @@ still present on this machine — otherwise this section is the source of truth 
   constants chosen to match typical Audacity raw-import defaults for consistency
   with the manual technique — not derived from anything, since there's no real
   "audio" here, just bytes being pushed through a plugin's `processBlock`.
+- **Some plugin editors visually overflow the embedded panel — this is a real
+  JUCE/AppKit limitation, not a bug in this codebase, and there is no
+  in-app fix.** Confirmed against a real plugin (Apple's `AUBandpass`): editors
+  whose UI is a native Cocoa/Metal view get that native `NSView` attached as a
+  *sibling of the window's peer content view* by JUCE's native-hosting layer
+  (`juce_NSViewComponent_mac.mm`), sized via `ComponentPeer::getAreaCoveredBy()`'s
+  full unclipped bounds — it never gets nested inside the `juce::Viewport`'s own
+  view hierarchy, so nothing in this app's component tree can clip it. Plugins
+  whose editor renders purely through JUCE's own `Graphics` (the generic
+  fallback editor, custom-drawn UIs) are unaffected and clip/scroll correctly.
+  A real fix would mean patching JUCE's native-view-hosting code itself — out
+  of scope. A follow-up attempt to let the user manually shrink an oversized
+  editor via +/- zoom buttons (`Component::setTransform()` + a
+  `ScaledEditorHolder` wrapper, persisted per-plugin via
+  `juce::ApplicationProperties`) was built, tested, and **reverted** — the
+  transform only scaled the JUCE-side container, not the native view's actual
+  rendered content, so it didn't solve the problem it was meant to solve.
+  There is no code for this in the tree; if revisiting, expect the same
+  native-hosting root cause to block it again.
