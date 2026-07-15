@@ -45,6 +45,20 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
     repaint();
 }
 
+void WaveformView::updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples)
+{
+    const int length = newSamples.getNumSamples();
+    if (length <= 0)
+        return;
+
+    waveformData.copyFrom(0, startSample, newSamples, 0, 0, length);
+
+    if (onViewChanged != nullptr)
+        onViewChanged();
+
+    repaint();
+}
+
 void WaveformView::clearSelection()
 {
     if (onBeforeSelectionChange != nullptr)

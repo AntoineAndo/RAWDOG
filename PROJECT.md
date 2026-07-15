@@ -289,6 +289,30 @@ purely as a structural refactor with no behavior change:
   preview rescopes to the new selection), or `updatePreview()` otherwise. This was
   pulled forward from the original "v2 deferred" list because the mapping turned
   out to be trivial once the toJuceImage() highlight parameter existed.
+  - **Live-preview performance**: on a large image (e.g. full HD, ~6.2MB of pixel
+    bytes), the naive version of the above made dragging a selection while a
+    plugin panel was open feel frozen — every mouse-move frame re-ran the plugin
+    and re-converted the *whole* pixel buffer to float and back, even for a tiny
+    selection. Two independent fixes, both preserving exact byte output:
+    (1) `MainComponent` privately inherits `juce::AsyncUpdater`; `onSelectionChanged`
+    now calls `triggerAsyncUpdate()` instead of recomputing directly, coalescing a
+    burst of drag frames into at most one recompute per event-loop turn via
+    `handleAsyncUpdate()` — the same debounce idiom `PluginParameterWatcher`
+    already used for parameter-change bursts. (2) `computeProcessedPixelBytes()`
+    and `refreshLivePreview()` no longer float-convert the untouched majority of
+    the buffer: bytes outside the selection are a plain byte copy (they're
+    provably unchanged, per Apply scoping below), and only the selected
+    sub-range pays the float round-trip — `WaveformView::updateSampleRange()`
+    (a new method, distinct from `setBuffer()`) writes just that sub-range into
+    the waveform's existing buffer rather than reconstructing the whole thing.
+    **Gotcha this introduced and had to fix**: deferring the recompute means
+    `livePreviewBytes` can momentarily lag one event-loop turn behind the true
+    selection (mutated synchronously in `WaveformView` regardless of the
+    deferral) — `applyClicked()`'s `if (livePreviewBytes.isEmpty())` safety net
+    only ever guarded against *absent* preview bytes, not *stale* ones, so a
+    mis-timed Apply click could silently commit the wrong scope. Fixed by calling
+    `handleUpdateNowIfNeeded()` (flushes any pending recompute synchronously) as
+    the first line of `applyClicked()`, restoring the guarantee below.
 - **Apply scoping**: if `WaveformView::getSelectionSampleRange()` is non-empty,
   `MainComponent::computeProcessedPixelBytes()` (the shared helper behind both the
   live preview and Apply) copies just that sub-range into a temporary buffer,

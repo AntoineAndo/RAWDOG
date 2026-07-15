@@ -27,7 +27,7 @@ void ZoomableImageView::paint(juce::Graphics& g)
     if (! image.isValid())
     {
         g.setColour(juce::Colours::grey);
-        g.drawText("Load an image to see it here", getLocalBounds(), juce::Justification::centred);
+        g.drawText("Click to load an image", getLocalBounds(), juce::Justification::centred);
         return;
     }
 
@@ -56,6 +56,8 @@ void ZoomableImageView::mouseMagnify(const juce::MouseEvent& e, float scaleFacto
 
 void ZoomableImageView::mouseDown(const juce::MouseEvent&)
 {
+    if (! image.isValid() && onClickWithNoImage != nullptr)
+        onClickWithNoImage();
 }
 
 void ZoomableImageView::mouseDrag(const juce::MouseEvent&)

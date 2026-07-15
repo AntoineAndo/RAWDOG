@@ -18,6 +18,16 @@ public:
     // false when refreshing after an in-place edit like Apply (same sample count, so the
     // current zoom/scroll/selection stay put — the user is likely inspecting that exact spot).
     void setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView = true);
+
+    // Overwrites just a sub-range of the existing buffer's samples in place —
+    // for when only a scoped sub-range of the underlying data actually changed
+    // (e.g. a selection-scoped live preview), so the caller doesn't have to pay
+    // for reconverting/reconstructing the whole buffer just to refresh the part
+    // that changed. Sample count is unchanged, so unlike setBuffer() there's
+    // nothing to re-clamp view/selection against; still fires onViewChanged and
+    // repaints, matching setBuffer(..., resetView=false)'s effect on those.
+    void updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples);
+
     void clearSelection();
 
     // Restores a selection programmatically (e.g. undo/redo) without treating it as a

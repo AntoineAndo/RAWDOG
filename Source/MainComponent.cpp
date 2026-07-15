@@ -33,15 +33,11 @@ MainComponent::MainComponent()
     horizontalZoomSlider.setValue(1.0);
     horizontalZoomSlider.onValueChange = [this] { waveformView.setHorizontalZoom((float) horizontalZoomSlider.getValue()); };
 
+    imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
+
     horizontalScrollBar.addListener(this);
     waveformView.onViewChanged = [this] { syncScrollBarToView(); };
-    waveformView.onSelectionChanged = [this]
-    {
-        if (pluginEditorPanel != nullptr)
-            refreshLivePreview();
-        else
-            updatePreview();
-    };
+    waveformView.onSelectionChanged = [this] { triggerAsyncUpdate(); };
     waveformView.onBeforeSelectionChange = [this]
     {
         // While a live-preview panel is open, a new selection drag only rescopes
@@ -110,6 +106,8 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    cancelPendingUpdate();
+
     juce::MenuBarModel::setMacMainMenu(nullptr);
 
     pluginParamWatcher.attachTo(nullptr);
@@ -289,6 +287,14 @@ void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, doubl
 {
     if (scrollBarThatHasMoved == &horizontalScrollBar)
         waveformView.setViewStart((int) newRangeStart);
+}
+
+void MainComponent::handleAsyncUpdate()
+{
+    if (pluginEditorPanel != nullptr)
+        refreshLivePreview();
+    else
+        updatePreview();
 }
 
 void MainComponent::resized()

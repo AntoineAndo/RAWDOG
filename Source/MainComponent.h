@@ -16,6 +16,7 @@
 
 class MainComponent : public juce::Component,
                       private juce::ScrollBar::Listener,
+                      private juce::AsyncUpdater,
                       public juce::ApplicationCommandTarget
 {
 public:
@@ -59,6 +60,13 @@ private:
     void endLivePreviewSession(bool commitToWorkingImage);
 
     void scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
+
+    // Coalesces WaveformView::onSelectionChanged, which fires on every mouse-move
+    // frame of a selection drag — without this, dragging a selection while a
+    // plugin panel is open would re-run the plugin's (potentially multi-second)
+    // processing once per mouse-move event instead of once per event-loop turn.
+    // Same debounce idiom PluginParameterWatcher already uses for parameter bursts.
+    void handleAsyncUpdate() override;
 
     static constexpr double sampleRate = 44100.0;
     static constexpr int blockSize = 512;

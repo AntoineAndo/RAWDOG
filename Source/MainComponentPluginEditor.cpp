@@ -83,21 +83,29 @@ juce::MemoryBlock MainComponent::computeProcessedPixelBytes(juce::AudioPluginIns
                      // live-preview passes against the same source bytes stay deterministic for
                      // stateful plugins (filters, reverbs, etc).
 
-    auto buffer = SampleFormat::bytesToBuffer(workingImage->pixelBytes);
-
+    // Bytes outside the selection are provably untouched (see PROJECT.md's "Apply
+    // scoping"), so start from a plain byte copy of the source and only pay the
+    // float round-trip for the selected sub-range — on a large image with a small
+    // selection, converting the whole buffer on every live-preview tick was pure
+    // waste.
     if (! selection.isEmpty())
     {
         const int start = selection.getStart();
         const int length = selection.getLength();
-        juce::AudioBuffer<float> selectedBuffer(1, length);
-        selectedBuffer.copyFrom(0, 0, buffer, 0, start, length);
+
+        juce::MemoryBlock selectionBytes(static_cast<const char*>(workingImage->pixelBytes.getData()) + start,
+                                          (size_t) length);
+        auto selectedBuffer = SampleFormat::bytesToBuffer(selectionBytes);
         PluginHost::processWholeBuffer(plugin, selectedBuffer, blockSize);
-        buffer.copyFrom(0, start, selectedBuffer, 0, 0, length);
+        SampleFormat::bufferToBytes(selectedBuffer, selectionBytes);
+
+        juce::MemoryBlock result(workingImage->pixelBytes);
+        result.copyFrom(selectionBytes.getData(), start, (size_t) length);
+        return result;
     }
-    else
-    {
-        PluginHost::processWholeBuffer(plugin, buffer, blockSize);
-    }
+
+    auto buffer = SampleFormat::bytesToBuffer(workingImage->pixelBytes);
+    PluginHost::processWholeBuffer(plugin, buffer, blockSize);
 
     juce::MemoryBlock result;
     result.setSize(workingImage->pixelBytes.getSize());
@@ -114,7 +122,21 @@ void MainComponent::refreshLivePreview()
     livePreviewBytes = computeProcessedPixelBytes(*currentPlugin, selection);
 
     imagePreview.setImage(workingImage->toJuceImageFromBytes(livePreviewBytes, selection), false);
-    waveformView.setBuffer(SampleFormat::bytesToBuffer(livePreviewBytes), false);
+
+    if (! selection.isEmpty())
+    {
+        // Mirror the scoped conversion above: only the selected sub-range of
+        // livePreviewBytes actually changed, so only that sub-range of the
+        // waveform's buffer needs updating, instead of reconverting the whole
+        // (possibly huge) buffer to float again just to refresh a small part of it.
+        juce::MemoryBlock selectionBytes(static_cast<const char*>(livePreviewBytes.getData()) + selection.getStart(),
+                                          (size_t) selection.getLength());
+        waveformView.updateSampleRange(selection.getStart(), SampleFormat::bytesToBuffer(selectionBytes));
+    }
+    else
+    {
+        waveformView.setBuffer(SampleFormat::bytesToBuffer(livePreviewBytes), false);
+    }
 }
 
 void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
@@ -132,6 +154,15 @@ void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
 
 void MainComponent::applyClicked()
 {
+    // A selection drag fires onSelectionChanged on every mouse-move frame, which
+    // MainComponent coalesces into at most one recompute per event-loop turn (see
+    // handleAsyncUpdate()) — but that means livePreviewBytes can momentarily lag
+    // behind the true current selection between the last drag frame and the next
+    // turn. Flush any pending recompute synchronously first, so the "isEmpty()"
+    // safety net below can't be fooled by a *stale* (rather than merely absent)
+    // livePreviewBytes into committing the wrong scope.
+    handleUpdateNowIfNeeded();
+
     if (workingImage == nullptr)
     {
         setStatus("Load an image first.");

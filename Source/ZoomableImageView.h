@@ -21,6 +21,10 @@ public:
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
 
+    // Fired on a plain click while no image is loaded, so a host can treat the
+    // empty preview area as a shortcut into its own "load image" action.
+    std::function<void()> onClickWithNoImage;
+
 private:
     void fitToView();
     void applyZoom(float factor, juce::Point<float> anchorScreenPos);
