@@ -17,6 +17,8 @@ target_sources(PixelBender PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
     Source/PluginScanner.cpp
+    Source/PluginHost.cpp
+    Source/RawImage.cpp
 )
 
 target_compile_definitions(PixelBender PRIVATE
