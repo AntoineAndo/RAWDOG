@@ -27,6 +27,19 @@ public:
     // scanThread out from under the running thread.
     bool isScanning() const;
 
+    // Attempts to load a previously-saved scan result from disk into
+    // knownPluginList (see saveCachedPluginListToDisk()). Returns true if a
+    // cache file existed and was successfully loaded — callers can skip a
+    // fresh scan. Returns false (safely, without throwing/crashing) if the
+    // file doesn't exist, is empty, or fails to parse — callers should fall
+    // back to a real scan in that case.
+    bool loadCachedPluginList();
+
+    // Persists the current knownPluginList to disk so a future launch's
+    // loadCachedPluginList() can restore it without rescanning. Call after
+    // any scanAll() completes. Creates the parent directory if needed.
+    void saveCachedPluginListToDisk() const;
+
     juce::KnownPluginList& getKnownPluginList() { return knownPluginList; }
     juce::AudioPluginFormatManager& getFormatManager() { return formatManager; }
 

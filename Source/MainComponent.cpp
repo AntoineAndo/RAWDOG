@@ -2,23 +2,63 @@
 #include "PluginHost.h"
 #include "SampleFormat.h"
 
+// Shared by both the ungrouped path and the grouped-leaf-row path: draws the
+// favourite star plus the plugin's name/manufacturer/format text, starting at
+// a caller-supplied left indent (0 for the flat list, a small extra indent for
+// leaf rows nested under a vendor header).
+void MainComponent::PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescription& desc,
+                                                      bool isFavourite, int leftIndent, int width, int height)
+{
+    g.setColour(isFavourite ? juce::Colours::yellow : juce::Colours::grey);
+    g.drawText(isFavourite ? juce::CharPointer_UTF8("\xE2\x98\x85") : juce::CharPointer_UTF8("\xE2\x98\x86"),
+                leftIndent, 0, starColumnWidth, height, juce::Justification::centred);
+
+    g.setColour(enabled ? juce::Colours::white : juce::Colours::grey);
+    g.drawText(desc.name + "  —  " + desc.manufacturerName + "  (" + desc.pluginFormatName + ")",
+                leftIndent + starColumnWidth + 4, 0, width - leftIndent - starColumnWidth - 8, height,
+                juce::Justification::centredLeft);
+}
+
 void MainComponent::PluginListModel::paintListBoxItem(int rowNumber, juce::Graphics& g,
                                                         int width, int height, bool rowIsSelected)
 {
     if (rowIsSelected)
         g.fillAll(juce::Colours::lightblue);
 
-    if (auto* desc = getType(rowNumber))
+    if (groupByVendor)
     {
-        const bool isFavourite = favourites.isFavourite(desc->createIdentifierString());
-        g.setColour(isFavourite ? juce::Colours::yellow : juce::Colours::grey);
-        g.drawText(isFavourite ? juce::CharPointer_UTF8("\xE2\x98\x85") : juce::CharPointer_UTF8("\xE2\x98\x86"),
-                    0, 0, starColumnWidth, height, juce::Justification::centred);
+        if (! juce::isPositiveAndBelow(rowNumber, displayRows.size()))
+            return;
 
-        g.setColour(enabled ? juce::Colours::white : juce::Colours::grey);
-        g.drawText(desc->name + "  —  " + desc->manufacturerName + "  (" + desc->pluginFormatName + ")",
-                    starColumnWidth + 4, 0, width - starColumnWidth - 8, height, juce::Justification::centredLeft);
+        const auto& displayRow = displayRows.getReference(rowNumber);
+
+        if (displayRow.isHeader)
+        {
+            g.fillAll(juce::Colours::darkgrey.darker());
+
+            const bool isExpanded = expandedVendors.contains(displayRow.vendorName);
+
+            int matchingCount = 0;
+            for (const auto& desc : cachedTypes)
+                if (desc.manufacturerName == displayRow.vendorName)
+                    ++matchingCount;
+
+            g.setColour(juce::Colours::white);
+            g.drawText(isExpanded ? juce::CharPointer_UTF8("\xE2\x96\xBE") : juce::CharPointer_UTF8("\xE2\x96\xB8"),
+                        4, 0, starColumnWidth, height, juce::Justification::centred);
+            g.drawText(displayRow.vendorName + " (" + juce::String(matchingCount) + ")",
+                        starColumnWidth + 8, 0, width - starColumnWidth - 12, height, juce::Justification::centredLeft);
+            return;
+        }
+
+        if (auto* desc = getType(rowNumber))
+            paintPluginRow(g, *desc, favourites.isFavourite(desc->createIdentifierString()), groupedLeafIndent, width, height);
+
+        return;
     }
+
+    if (auto* desc = getType(rowNumber))
+        paintPluginRow(g, *desc, favourites.isFavourite(desc->createIdentifierString()), 0, width, height);
 }
 
 MainComponent::MainComponent()
@@ -77,9 +117,23 @@ MainComponent::MainComponent()
     listModel.onDoubleClick = [this](int row) { loadAndOpenPlugin(row); };
     listModel.onFavouritesChanged = [this] { pluginListBox.updateContent(); pluginListBox.repaint(); };
 
+    // The model has no reference back to pluginListBox (it deliberately doesn't
+    // own UI components, same as every other filter/mutation callback here), so
+    // the deselectAllRows() call the plan calls for lives here rather than in the
+    // model: ListBox selection tracks by row *number*, not item identity, so an
+    // expand/collapse toggle that shifts row numbers around could otherwise leave
+    // the highlight appearing to jump to an unrelated row.
+    listModel.onGroupExpansionChanged = [this]
+    {
+        pluginListBox.deselectAllRows();
+        pluginListBox.updateContent();
+        pluginListBox.repaint();
+    };
+
     leftColumn.onTabChanged = [this](int tabIndex)
     {
         listModel.setShowFavouritesOnly(tabIndex == 1);
+        listModel.setGroupByVendor(tabIndex == 2);
         pluginListBox.updateContent();
         pluginListBox.repaint();
     };
@@ -96,7 +150,21 @@ MainComponent::MainComponent()
 
     setSize(900, 700);
 
-    refreshPluginList();
+    if (scanner.loadCachedPluginList())
+    {
+        listModel.refresh();
+        pluginListBox.updateContent();
+        pluginListBox.repaint();
+        setStatus("Loaded " + juce::String(scanner.getKnownPluginList().getNumTypes())
+                    + " cached plugin(s). Use Rescan Plugins to refresh.");
+    }
+    else
+    {
+        // First launch on this machine — nothing cached yet, so an initial
+        // scan is unavoidable. Every subsequent launch loads the cache above
+        // instead.
+        refreshPluginList();
+    }
 }
 
 MainComponent::~MainComponent()
@@ -177,6 +245,7 @@ void MainComponent::refreshPluginList()
         listModel.refresh();
         pluginListBox.updateContent();
         pluginListBox.repaint();
+        scanner.saveCachedPluginListToDisk();
         setStatus("Found " + juce::String(scanner.getKnownPluginList().getNumTypes()) + " plugin(s).");
         menuItemsChanged();
     });

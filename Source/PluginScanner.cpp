@@ -76,6 +76,47 @@ bool PluginScanner::isScanning() const
     return scanThread != nullptr && scanThread->isThreadRunning();
 }
 
+// Same "~/Library/Application Support/PixelBender/" folder FavouritePluginsStore
+// writes its settings file into (juce::PropertiesFile::Options with
+// folderName = "PixelBender", osxLibrarySubFolder = "Application Support") —
+// a sibling file there keeps all of this app's persisted state in one place.
+static juce::File getCachedPluginListFile()
+{
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("Application Support")
+        .getChildFile("PixelBender")
+        .getChildFile("KnownPlugins.xml");
+}
+
+bool PluginScanner::loadCachedPluginList()
+{
+    const auto file = getCachedPluginListFile();
+
+    if (! file.existsAsFile())
+        return false;
+
+    auto xml = juce::XmlDocument::parse(file);
+
+    // parse() returns nullptr on a missing/empty/malformed file rather than
+    // throwing, so this guard covers "file exists but is corrupt/hand-edited
+    // garbage" without crashing or leaving knownPluginList in a weird state.
+    if (xml == nullptr)
+        return false;
+
+    knownPluginList.recreateFromXml(*xml);
+    return true;
+}
+
+void PluginScanner::saveCachedPluginListToDisk() const
+{
+    const auto file = getCachedPluginListFile();
+
+    file.getParentDirectory().createDirectory();
+
+    if (auto xml = knownPluginList.createXml())
+        xml->writeTo(file);
+}
+
 void PluginScanner::scanAll(std::function<void()> onComplete)
 {
     // Guard against re-entrancy: callers (MainComponent disables "Rescan
