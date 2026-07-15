@@ -18,9 +18,6 @@ void MainComponent::PluginListModel::paintListBoxItem(int rowNumber, juce::Graph
 
 MainComponent::MainComponent()
 {
-    addAndMakeVisible(loadImageButton);
-    addAndMakeVisible(exportImageButton);
-    addAndMakeVisible(resetButton);
     addAndMakeVisible(imagePreview);
     addAndMakeVisible(waveformView);
     addAndMakeVisible(waveformZoomSlider);
@@ -28,15 +25,9 @@ MainComponent::MainComponent()
     addAndMakeVisible(horizontalZoomSlider);
     addAndMakeVisible(horizontalScrollBar);
     addAndMakeVisible(pluginListBox);
-    addAndMakeVisible(rescanButton);
     addAndMakeVisible(statusLabel);
 
-    imagePreview.setImagePlacement(juce::RectanglePlacement::centred);
-
-    loadImageButton.onClick = [this] { loadImageClicked(); };
-    exportImageButton.onClick = [this] { exportImageClicked(); };
-    resetButton.onClick = [this] { resetClicked(); };
-    rescanButton.onClick = [this] { refreshPluginList(); };
+    juce::MenuBarModel::setMacMainMenu(this);
 
     waveformZoomSlider.setRange(1.0, 20.0, 0.1);
     waveformZoomSlider.setValue(1.0);
@@ -67,8 +58,38 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    juce::MenuBarModel::setMacMainMenu(nullptr);
+
     if (currentPlugin != nullptr)
         currentPlugin->releaseResources();
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "File" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex(int /*topLevelMenuIndex*/, const juce::String& /*menuName*/)
+{
+    juce::PopupMenu menu;
+    menu.addItem(loadImageMenuItem, "Load Image...");
+    menu.addItem(exportImageMenuItem, "Export Image...", workingImage != nullptr);
+    menu.addItem(resetMenuItem, "Reset to Original", originalImage != nullptr);
+    menu.addSeparator();
+    menu.addItem(rescanPluginsMenuItem, "Rescan Plugins");
+    return menu;
+}
+
+void MainComponent::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
+{
+    switch (menuItemID)
+    {
+        case loadImageMenuItem:      loadImageClicked(); break;
+        case exportImageMenuItem:    exportImageClicked(); break;
+        case resetMenuItem:          resetClicked(); break;
+        case rescanPluginsMenuItem:  refreshPluginList(); break;
+        default: break;
+    }
 }
 
 void MainComponent::setStatus(const juce::String& text)
@@ -108,7 +129,7 @@ void MainComponent::loadImageClicked()
             originalImage = std::move(image);
             workingImage = std::make_unique<RawImage>(*originalImage);
             updateWaveform(true);
-            updatePreview();
+            updatePreview(true);
             updatePluginListEnablement();
             setStatus("Loaded " + file.getFileName() + " (" + juce::String(workingImage->pixelBytes.getSize()) + " bytes of pixel data).");
         });
@@ -246,14 +267,14 @@ void MainComponent::resetClicked()
 
     workingImage = std::make_unique<RawImage>(*originalImage);
     updateWaveform(true);
-    updatePreview();
+    updatePreview(true);
     setStatus("Reset to original image.");
 }
 
-void MainComponent::updatePreview()
+void MainComponent::updatePreview(bool resetView)
 {
     if (workingImage != nullptr)
-        imagePreview.setImage(workingImage->toJuceImage(waveformView.getSelectionSampleRange()));
+        imagePreview.setImage(workingImage->toJuceImage(waveformView.getSelectionSampleRange()), resetView);
 }
 
 void MainComponent::updateWaveform(bool resetView)
@@ -302,18 +323,7 @@ void MainComponent::resized()
     auto leftColumn = area.removeFromLeft(260);
     area.removeFromLeft(8);
 
-    rescanButton.setBounds(leftColumn.removeFromTop(30));
-    leftColumn.removeFromTop(8);
     pluginListBox.setBounds(leftColumn);
-
-    auto topRow = area.removeFromTop(30);
-    loadImageButton.setBounds(topRow.removeFromLeft(140));
-    topRow.removeFromLeft(8);
-    exportImageButton.setBounds(topRow.removeFromLeft(140));
-    topRow.removeFromLeft(8);
-    resetButton.setBounds(topRow.removeFromLeft(140));
-
-    area.removeFromTop(8);
 
     auto statusArea = area.removeFromBottom(24);
     area.removeFromBottom(8);

@@ -4,9 +4,11 @@
 #include "PluginScanner.h"
 #include "RawImage.h"
 #include "WaveformView.h"
+#include "ZoomableImageView.h"
 
 class MainComponent : public juce::Component,
-                      private juce::ScrollBar::Listener
+                      private juce::ScrollBar::Listener,
+                      public juce::MenuBarModel
 {
 public:
     MainComponent();
@@ -14,7 +16,19 @@ public:
 
     void resized() override;
 
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String& menuName) override;
+    void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
+
 private:
+    enum MenuItemIDs
+    {
+        loadImageMenuItem = 1,
+        exportImageMenuItem,
+        resetMenuItem,
+        rescanPluginsMenuItem
+    };
+
     void refreshPluginList();
     void loadImageClicked();
     void exportImageClicked();
@@ -22,7 +36,7 @@ private:
     void openEditorClicked();
     void applyClicked();
     void resetClicked();
-    void updatePreview();
+    void updatePreview(bool resetView = false);
     void updateWaveform(bool resetView = false);
     void updatePluginListEnablement();
     void syncScrollBarToView();
@@ -35,16 +49,12 @@ private:
 
     PluginScanner scanner;
 
-    juce::TextButton loadImageButton { "Load Image..." };
-    juce::TextButton exportImageButton { "Export Image..." };
-    juce::TextButton rescanButton { "Rescan Plugins" };
-    juce::TextButton resetButton { "Reset to Original" };
     juce::Slider waveformZoomSlider { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
     juce::Label waveformZoomLabel { {}, "Zoom" };
     juce::Slider horizontalZoomSlider { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     juce::ScrollBar horizontalScrollBar { false };
 
-    juce::ImageComponent imagePreview;
+    ZoomableImageView imagePreview;
     WaveformView waveformView;
     juce::ListBox pluginListBox;
     juce::Label statusLabel;
