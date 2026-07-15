@@ -1,4 +1,5 @@
 #include "RawImage.h"
+#include <vector>
 
 namespace
 {
@@ -205,7 +206,7 @@ std::unique_ptr<RawImage> RawImage::loadPnm(const juce::File& file, juce::String
     return result;
 }
 
-bool RawImage::writeToFile(const juce::File& file) const
+bool RawImage::writeToPngFile(const juce::File& file) const
 {
     auto stream = file.createOutputStream();
     if (stream == nullptr)
@@ -214,13 +215,8 @@ bool RawImage::writeToFile(const juce::File& file) const
     stream->setPosition(0);
     stream->truncate();
 
-    if (! stream->write(headerBytes.getData(), headerBytes.getSize()))
-        return false;
-
-    if (! stream->write(pixelBytes.getData(), pixelBytes.getSize()))
-        return false;
-
-    return true;
+    juce::PNGImageFormat pngFormat;
+    return pngFormat.writeImageToStream(toJuceImage(), *stream);
 }
 
 juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender, juce::Range<int> highlightByteRange) const
@@ -230,6 +226,40 @@ juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRende
 
     const auto* px = static_cast<const uint8_t*>(bytesToRender.getData());
     const size_t available = bytesToRender.getSize();
+
+    // Outline thickness in pixels: a selected pixel is drawn as part of the
+    // border if any pixel within this distance is unselected. Interior
+    // pixels are left completely untinted, so the plugin's actual processed
+    // colours stay visible — only a border around the selection is drawn,
+    // rather than a full-area tint that used to obscure the result.
+    constexpr int outlineThickness = 2;
+
+    // Precompute each screen row's selected column range once (one
+    // Range::getIntersectionWith() per row) rather than recomputing byte
+    // offsets and re-intersecting for every pixel in a thickness x thickness
+    // neighbourhood — turns an O(width*height*outlineThickness^2) scan into
+    // O(width*height) with a cheap O(outlineThickness) per-pixel border
+    // check below, which matters once a selection covers a large image.
+    // An empty Range means "this row has no selected columns".
+    std::vector<juce::Range<int>> rowSelection;
+
+    if (! highlightByteRange.isEmpty())
+    {
+        rowSelection.resize((size_t) height);
+
+        for (int y = 0; y < height; ++y)
+        {
+            const int sourceRow = bottomUp ? (height - 1 - y) : y;
+            const size_t rowOffset = (size_t) sourceRow * (size_t) rowStride;
+            const auto rowByteRange = juce::Range<int>((int) rowOffset,
+                                                        (int) (rowOffset + (size_t) width * (size_t) channels));
+            const auto intersection = highlightByteRange.getIntersectionWith(rowByteRange);
+
+            if (! intersection.isEmpty())
+                rowSelection[(size_t) y] = { (intersection.getStart() - (int) rowOffset) / channels,
+                                              (intersection.getEnd() - (int) rowOffset + channels - 1) / channels };
+        }
+    }
 
     for (int y = 0; y < height; ++y)
     {
@@ -267,9 +297,32 @@ juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRende
 
             auto colour = juce::Colour(r, g, b);
 
-            if (! highlightByteRange.isEmpty()
-                && highlightByteRange.intersects({ (int) byteOffset, (int) (byteOffset + (size_t) channels) }))
-                colour = colour.interpolatedWith(juce::Colours::yellow, 0.5f);
+            if (! highlightByteRange.isEmpty() && rowSelection[(size_t) y].contains(x))
+            {
+                const auto& thisRow = rowSelection[(size_t) y];
+
+                // Near the left/right edge of this row's selected span (O(1) —
+                // just a distance check against the span's own bounds).
+                bool isBorder = (x - thisRow.getStart() < outlineThickness)
+                              || (thisRow.getEnd() - 1 - x < outlineThickness);
+
+                // Near the top/bottom edge: a neighbouring row within
+                // outlineThickness doesn't have this column selected. Only
+                // outlineThickness row lookups (not a full 2D neighbourhood),
+                // each an O(1) array index + Range::contains.
+                for (int dy = 1; dy <= outlineThickness && ! isBorder; ++dy)
+                {
+                    const int above = y - dy;
+                    const int below = y + dy;
+
+                    if ((above < 0 || ! rowSelection[(size_t) above].contains(x))
+                        || (below >= height || ! rowSelection[(size_t) below].contains(x)))
+                        isBorder = true;
+                }
+
+                if (isBorder)
+                    colour = juce::Colours::yellow;
+            }
 
             bitmap.setPixelColour(x, y, colour);
         }

@@ -292,14 +292,12 @@ void MainComponent::exportImageClicked()
         return;
     }
 
-    // writeToFile() always writes back the original format's header+pixel bytes
-    // verbatim, so the export dialog must only offer the extension matching the
-    // format the image was actually loaded as (e.g. a loaded .pnm exported as
-    // "x.bmp" would silently contain PNM bytes under a .bmp name otherwise).
-    const auto suggestedFile = juce::File::getCurrentWorkingDirectory()
-                                    .getChildFile("export" + workingImage->getDefaultExportExtension());
+    // Export always produces a PNG, regardless of the format the image was
+    // loaded from — a real, widely-viewable encoded image rather than a raw
+    // BMP/PNM byte reconstruction.
+    const auto suggestedFile = juce::File::getCurrentWorkingDirectory().getChildFile("export.png");
 
-    fileChooser = std::make_unique<juce::FileChooser>("Export image", suggestedFile, workingImage->getExportWildcard());
+    fileChooser = std::make_unique<juce::FileChooser>("Export image", suggestedFile, "*.png");
 
     fileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
         [this](const juce::FileChooser& fc)
@@ -308,7 +306,7 @@ void MainComponent::exportImageClicked()
             if (file == juce::File())
                 return;
 
-            if (workingImage->writeToFile(file))
+            if (workingImage->writeToPngFile(file))
                 setStatus("Exported to " + file.getFullPathName());
             else
                 setStatus("Failed to write file.");

@@ -57,6 +57,8 @@ public:
     void paint(juce::Graphics& g) override;
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseUp(const juce::MouseEvent& e) override;
+    void mouseMove(const juce::MouseEvent& e) override;
 
 private:
     int xToSample(int x) const;
@@ -71,4 +73,14 @@ private:
     int selectionStartSample = 0;
     int selectionEndSample = 0;
     bool hasSelection = false;
+
+    // Gesture classification for click-drag interaction with an existing
+    // selection: resizing an edge, moving the whole selection, or creating a
+    // brand new one. Decided once in mouseDown and applied in mouseDrag.
+    enum class DragMode { none, creatingSelection, resizingLeft, resizingRight, movingSelection };
+    DragMode dragMode = DragMode::none;
+    int dragAnchorSample = 0;       // resize: the fixed (opposite) edge's sample
+    int dragMoveOffsetSamples = 0;  // move: (sample under cursor at grab) - (selection's left edge at grab)
+    int dragMoveLengthSamples = 0;  // move: selection length at grab, held constant while moving
+    static constexpr int handleGrabPixels = 6; // hit-test tolerance around each handle, in pixels
 };

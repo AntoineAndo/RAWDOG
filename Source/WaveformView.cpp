@@ -181,14 +181,64 @@ void WaveformView::paint(juce::Graphics& g)
         g.fillRect(selectionRect);
         g.setColour(juce::Colours::yellow);
         g.drawRect(selectionRect, 1.0f);
+
+        // Small grip marks at each edge so the resize handles are visually
+        // discoverable, not just an invisible hit zone found by hovering.
+        constexpr float gripWidth = 3.0f;
+        g.setColour(juce::Colours::white);
+        g.fillRect(juce::Rectangle<float>(x1 - gripWidth * 0.5f, 0.0f, gripWidth, (float) height));
+        g.fillRect(juce::Rectangle<float>(x2 - gripWidth * 0.5f, 0.0f, gripWidth, (float) height));
     }
 }
 
 void WaveformView::mouseDown(const juce::MouseEvent& e)
 {
+    if (hasSelection)
+    {
+        const int leftEdgeSample = juce::jmin(selectionStartSample, selectionEndSample);
+        const int rightEdgeSample = juce::jmax(selectionStartSample, selectionEndSample);
+        const int leftX = sampleToX(leftEdgeSample);
+        const int rightX = sampleToX(rightEdgeSample);
+
+        if (std::abs(e.x - leftX) <= handleGrabPixels)
+        {
+            if (onBeforeSelectionChange != nullptr)
+                onBeforeSelectionChange();
+
+            dragMode = DragMode::resizingLeft;
+            dragAnchorSample = rightEdgeSample;
+            repaint();
+            return;
+        }
+
+        if (std::abs(e.x - rightX) <= handleGrabPixels)
+        {
+            if (onBeforeSelectionChange != nullptr)
+                onBeforeSelectionChange();
+
+            dragMode = DragMode::resizingRight;
+            dragAnchorSample = leftEdgeSample;
+            repaint();
+            return;
+        }
+
+        if (e.x > leftX && e.x < rightX)
+        {
+            if (onBeforeSelectionChange != nullptr)
+                onBeforeSelectionChange();
+
+            dragMode = DragMode::movingSelection;
+            dragMoveLengthSamples = rightEdgeSample - leftEdgeSample;
+            dragMoveOffsetSamples = xToSample(e.x) - leftEdgeSample;
+            repaint();
+            return;
+        }
+    }
+
     if (onBeforeSelectionChange != nullptr)
         onBeforeSelectionChange();
 
+    dragMode = DragMode::creatingSelection;
     selectionStartSample = selectionEndSample = xToSample(e.x);
     hasSelection = true;
 
@@ -200,10 +250,76 @@ void WaveformView::mouseDown(const juce::MouseEvent& e)
 
 void WaveformView::mouseDrag(const juce::MouseEvent& e)
 {
-    selectionEndSample = xToSample(juce::jlimit(0, getWidth(), e.x));
+    const int numSamples = waveformData.getNumSamples();
+
+    switch (dragMode)
+    {
+        case DragMode::resizingLeft:
+        {
+            // jmax guards against an inverted jlimit range when the anchor sits at (or
+            // near) sample 0 — e.g. resizing a degenerate zero-length selection created
+            // by a plain click with no drag — which would otherwise push selectionStartSample
+            // negative and corrupt any later byte-range copy off the raw buffer.
+            const int upperBound = juce::jmax(0, dragAnchorSample - 1);
+            const int newLeft = juce::jlimit(0, upperBound, xToSample(e.x));
+            selectionStartSample = newLeft;
+            selectionEndSample = dragAnchorSample;
+            break;
+        }
+
+        case DragMode::resizingRight:
+        {
+            // Symmetric guard: keep the lower bound from exceeding numSamples when the
+            // anchor sits at (or near) the buffer's end.
+            const int lowerBound = juce::jmin(numSamples, dragAnchorSample + 1);
+            const int newRight = juce::jlimit(lowerBound, numSamples, xToSample(e.x));
+            selectionStartSample = dragAnchorSample;
+            selectionEndSample = newRight;
+            break;
+        }
+
+        case DragMode::movingSelection:
+        {
+            const int newLeft = juce::jlimit(0, juce::jmax(0, numSamples - dragMoveLengthSamples),
+                                              xToSample(e.x) - dragMoveOffsetSamples);
+            selectionStartSample = newLeft;
+            selectionEndSample = newLeft + dragMoveLengthSamples;
+            break;
+        }
+
+        case DragMode::creatingSelection:
+        case DragMode::none:
+        default:
+            selectionEndSample = xToSample(juce::jlimit(0, getWidth(), e.x));
+            break;
+    }
 
     if (onSelectionChanged != nullptr)
         onSelectionChanged();
 
     repaint();
+}
+
+void WaveformView::mouseUp(const juce::MouseEvent&)
+{
+    dragMode = DragMode::none;
+}
+
+void WaveformView::mouseMove(const juce::MouseEvent& e)
+{
+    if (! hasSelection)
+    {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    const int leftX = sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
+    const int rightX = sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
+
+    if (std::abs(e.x - leftX) <= handleGrabPixels || std::abs(e.x - rightX) <= handleGrabPixels)
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    else if (e.x > leftX && e.x < rightX)
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    else
+        setMouseCursor(juce::MouseCursor::NormalCursor);
 }

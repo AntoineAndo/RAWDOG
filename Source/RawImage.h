@@ -11,7 +11,11 @@ class RawImage
 public:
     static std::unique_ptr<RawImage> loadFromFile(const juce::File& file, juce::String& errorMessage);
 
-    bool writeToFile(const juce::File& file) const;
+    // Exports the current pixelBytes as a PNG, regardless of the format the
+    // image was originally loaded from — encodes toJuceImage() (no selection
+    // highlight) via juce::PNGImageFormat, so the exported file is always a
+    // valid, widely-viewable image rather than a raw BMP/PNM reconstruction.
+    bool writeToPngFile(const juce::File& file) const;
 
     // Renders the current pixelBytes (post- or pre-processing) as a juce::Image for preview.
     // highlightByteRange, if non-empty, tints the pixels whose bytes fall within it — used to
@@ -28,19 +32,9 @@ public:
 
     enum class Format { bmp, pnmBinary, pnmGray };
 
-    // What format this image was actually loaded from. writeToFile() always
-    // writes back the original format's header+pixel bytes verbatim, so an
-    // export dialog must restrict its wildcard/extension to match this rather
-    // than letting the user pick an unrelated extension (see PROJECT.md).
+    // What format this image was actually loaded from (BMP vs PNM) — used
+    // internally to interpret pixelBytes' layout (row order, channel order).
     Format getFormat() const { return format; }
-    juce::String getExportWildcard() const { return format == Format::bmp ? "*.bmp" : "*.pnm;*.ppm;*.pgm"; }
-    juce::String getDefaultExportExtension() const
-    {
-        if (format == Format::bmp)
-            return ".bmp";
-
-        return format == Format::pnmGray ? ".pgm" : ".ppm";
-    }
 
     juce::MemoryBlock headerBytes;
     juce::MemoryBlock pixelBytes;
