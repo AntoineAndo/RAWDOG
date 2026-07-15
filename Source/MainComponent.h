@@ -48,6 +48,7 @@ private:
     void loadAndOpenPlugin(int row);
     void openEditorClicked();
     void applyClicked();
+    void cancelEditorClicked();
     void resetClicked();
     void undoClicked();
     void redoClicked();
@@ -117,12 +118,18 @@ private:
     class PluginEditorPanel : public juce::Component
     {
     public:
-        PluginEditorPanel(std::unique_ptr<juce::AudioProcessorEditor> editorIn, std::function<void()> onApply)
+        PluginEditorPanel(std::unique_ptr<juce::AudioProcessorEditor> editorIn, std::function<void()> onApply,
+                          std::function<void()> onCancel)
             : editor(std::move(editorIn))
         {
             viewport.setViewedComponent(editor.get(), false); // false: editor stays owned by our unique_ptr
+            viewport.setScrollBarsShown(true, true); // explicit: show scrollbars whenever the editor's own
+                                                      // (unforced) size exceeds the viewport, rather than
+                                                      // relying on Viewport's implicit default policy.
             addAndMakeVisible(viewport);
+            addAndMakeVisible(cancelButton);
             addAndMakeVisible(applyButton);
+            cancelButton.onClick = std::move(onCancel);
             applyButton.onClick = std::move(onApply);
         }
 
@@ -131,13 +138,16 @@ private:
         void resized() override
         {
             auto area = getLocalBounds();
-            applyButton.setBounds(area.removeFromBottom(40).reduced(8));
+            auto buttonStrip = area.removeFromBottom(40).reduced(8);
+            applyButton.setBounds(buttonStrip.removeFromRight(buttonStrip.getWidth() / 2).reduced(4, 0));
+            cancelButton.setBounds(buttonStrip.reduced(4, 0));
             viewport.setBounds(area);
         }
 
     private:
         std::unique_ptr<juce::AudioProcessorEditor> editor;
         juce::Viewport viewport;
+        juce::TextButton cancelButton { "Cancel" };
         juce::TextButton applyButton { "Apply" };
     };
 

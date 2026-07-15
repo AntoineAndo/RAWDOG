@@ -277,6 +277,10 @@ void MainComponent::openEditorClicked()
     pluginEditorPanel = std::make_unique<PluginEditorPanel>(std::unique_ptr<juce::AudioProcessorEditor>(editor), [this]
     {
         applyClicked();
+    },
+    [this]
+    {
+        cancelEditorClicked();
     });
 
     leftColumn.setEditorPanel(pluginEditorPanel.get());
@@ -378,6 +382,14 @@ void MainComponent::applyClicked()
 
     updatePreview();
     updateWaveform();
+}
+
+void MainComponent::cancelEditorClicked()
+{
+    endLivePreviewSession(false); // false = discard, do not commit to workingImage->pixelBytes
+    updatePreview();
+    updateWaveform();
+    setStatus("Cancelled — no changes applied.");
 }
 
 void MainComponent::resetClicked()
