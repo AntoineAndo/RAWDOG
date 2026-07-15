@@ -66,17 +66,26 @@ MainComponent::~MainComponent()
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return { "File" };
+    return { "File", "Edit" };
 }
 
-juce::PopupMenu MainComponent::getMenuForIndex(int /*topLevelMenuIndex*/, const juce::String& /*menuName*/)
+juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String& /*menuName*/)
 {
     juce::PopupMenu menu;
-    menu.addItem(loadImageMenuItem, "Load Image...");
-    menu.addItem(exportImageMenuItem, "Export Image...", workingImage != nullptr);
-    menu.addItem(resetMenuItem, "Reset to Original", originalImage != nullptr);
-    menu.addSeparator();
-    menu.addItem(rescanPluginsMenuItem, "Rescan Plugins");
+
+    if (topLevelMenuIndex == 0)
+    {
+        menu.addItem(loadImageMenuItem, "Load Image...");
+        menu.addItem(exportImageMenuItem, "Export Image...", workingImage != nullptr);
+        menu.addItem(resetMenuItem, "Reset to Original", originalImage != nullptr);
+        menu.addSeparator();
+        menu.addItem(rescanPluginsMenuItem, "Rescan Plugins");
+    }
+    else if (topLevelMenuIndex == 1)
+    {
+        menu.addItem(undoMenuItem, "Undo", ! undoStack.empty());
+    }
+
     return menu;
 }
 
@@ -88,6 +97,7 @@ void MainComponent::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
         case exportImageMenuItem:    exportImageClicked(); break;
         case resetMenuItem:          resetClicked(); break;
         case rescanPluginsMenuItem:  refreshPluginList(); break;
+        case undoMenuItem:           undoClicked(); break;
         default: break;
     }
 }
@@ -128,9 +138,11 @@ void MainComponent::loadImageClicked()
 
             originalImage = std::move(image);
             workingImage = std::make_unique<RawImage>(*originalImage);
+            undoStack.clear();
             updateWaveform(true);
             updatePreview(true);
             updatePluginListEnablement();
+            menuItemsChanged();
             setStatus("Loaded " + file.getFileName() + " (" + juce::String(workingImage->pixelBytes.getSize()) + " bytes of pixel data).");
         });
 }
@@ -231,6 +243,8 @@ void MainComponent::applyClicked()
         return;
     }
 
+    pushUndoState();
+
     auto buffer = SampleFormat::bytesToBuffer(workingImage->pixelBytes);
     const auto selection = waveformView.getSelectionSampleRange();
 
@@ -265,10 +279,34 @@ void MainComponent::resetClicked()
     if (originalImage == nullptr)
         return;
 
+    pushUndoState();
+
     workingImage = std::make_unique<RawImage>(*originalImage);
     updateWaveform(true);
     updatePreview(true);
     setStatus("Reset to original image.");
+}
+
+void MainComponent::undoClicked()
+{
+    if (undoStack.empty() || workingImage == nullptr)
+        return;
+
+    workingImage->pixelBytes = undoStack.back();
+    undoStack.pop_back();
+
+    updatePreview();
+    updateWaveform();
+    menuItemsChanged();
+    setStatus("Undid last action.");
+}
+
+void MainComponent::pushUndoState()
+{
+    if (workingImage != nullptr)
+        undoStack.push_back(workingImage->pixelBytes);
+
+    menuItemsChanged();
 }
 
 void MainComponent::updatePreview(bool resetView)

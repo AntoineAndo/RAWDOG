@@ -26,7 +26,8 @@ private:
         loadImageMenuItem = 1,
         exportImageMenuItem,
         resetMenuItem,
-        rescanPluginsMenuItem
+        rescanPluginsMenuItem,
+        undoMenuItem
     };
 
     void refreshPluginList();
@@ -36,6 +37,8 @@ private:
     void openEditorClicked();
     void applyClicked();
     void resetClicked();
+    void undoClicked();
+    void pushUndoState();
     void updatePreview(bool resetView = false);
     void updateWaveform(bool resetView = false);
     void updatePluginListEnablement();
@@ -137,6 +140,7 @@ private:
     std::unique_ptr<juce::AudioPluginInstance> currentPlugin;
     std::unique_ptr<PluginWindow> pluginWindow;
     std::unique_ptr<juce::FileChooser> fileChooser;
+    std::vector<juce::MemoryBlock> undoStack;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
