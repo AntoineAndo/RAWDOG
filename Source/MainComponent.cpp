@@ -10,9 +10,14 @@ void MainComponent::PluginListModel::paintListBoxItem(int rowNumber, juce::Graph
 
     if (auto* desc = getType(rowNumber))
     {
+        const bool isFavourite = favourites.isFavourite(desc->createIdentifierString());
+        g.setColour(isFavourite ? juce::Colours::yellow : juce::Colours::grey);
+        g.drawText(isFavourite ? juce::CharPointer_UTF8("\xE2\x98\x85") : juce::CharPointer_UTF8("\xE2\x98\x86"),
+                    0, 0, starColumnWidth, height, juce::Justification::centred);
+
         g.setColour(enabled ? juce::Colours::white : juce::Colours::grey);
         g.drawText(desc->name + "  —  " + desc->manufacturerName + "  (" + desc->pluginFormatName + ")",
-                    4, 0, width - 8, height, juce::Justification::centredLeft);
+                    starColumnWidth + 4, 0, width - starColumnWidth - 8, height, juce::Justification::centredLeft);
     }
 }
 
@@ -70,6 +75,21 @@ MainComponent::MainComponent()
     pluginListBox.setModel(&listModel);
     pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
     listModel.onDoubleClick = [this](int row) { loadAndOpenPlugin(row); };
+    listModel.onFavouritesChanged = [this] { pluginListBox.updateContent(); pluginListBox.repaint(); };
+
+    leftColumn.onTabChanged = [this](int tabIndex)
+    {
+        listModel.setShowFavouritesOnly(tabIndex == 1);
+        pluginListBox.updateContent();
+        pluginListBox.repaint();
+    };
+
+    leftColumn.onSearchChanged = [this](const juce::String& query)
+    {
+        listModel.setSearchQuery(query);
+        pluginListBox.updateContent();
+        pluginListBox.repaint();
+    };
 
     setStatus("Load a BMP or PNM image, then double-click a plugin to load it and tweak/apply.");
     updatePluginListEnablement();
@@ -512,6 +532,7 @@ void MainComponent::updatePluginListEnablement()
     const bool hasImage = workingImage != nullptr;
     pluginListBox.setEnabled(hasImage);
     listModel.setEnabled(hasImage);
+    leftColumn.setListControlsEnabled(hasImage);
     pluginListBox.repaint();
 
     waveformZoomSlider.setEnabled(hasImage);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "FavouritePluginsStore.h"
 #include "PluginParameterWatcher.h"
 #include "PluginScanner.h"
 #include "RawImage.h"
@@ -84,9 +85,15 @@ private:
     class PluginListModel : public juce::ListBoxModel
     {
     public:
-        explicit PluginListModel(juce::KnownPluginList& list) : knownPluginList(list) {}
+        PluginListModel(juce::KnownPluginList& list, FavouritePluginsStore& favouritesIn)
+            : knownPluginList(list), favourites(favouritesIn) {}
 
-        void refresh() { cachedTypes = knownPluginList.getTypes(); }
+        void refresh()
+        {
+            allTypes = knownPluginList.getTypes();
+            applyFilter();
+        }
+
         const juce::PluginDescription* getType(int index) const
         {
             return juce::isPositiveAndBelow(index, cachedTypes.size()) ? &cachedTypes.getReference(index) : nullptr;
@@ -94,23 +101,82 @@ private:
 
         int getNumRows() override { return cachedTypes.size(); }
         void paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
+
         void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override
         {
             if (enabled && onDoubleClick != nullptr)
                 onDoubleClick(row);
         }
 
+        void listBoxItemClicked(int row, const juce::MouseEvent& e) override
+        {
+            if (! enabled)
+                return;
+
+            if (e.x >= starColumnWidth)
+                return;
+
+            if (auto* desc = getType(row))
+            {
+                const auto identifier = desc->createIdentifierString();
+                favourites.setFavourite(identifier, ! favourites.isFavourite(identifier));
+                applyFilter();
+
+                if (onFavouritesChanged)
+                    onFavouritesChanged();
+            }
+        }
+
         void setEnabled(bool shouldBeEnabled) { enabled = shouldBeEnabled; }
 
+        void setShowFavouritesOnly(bool shouldShowFavouritesOnly)
+        {
+            showFavouritesOnly = shouldShowFavouritesOnly;
+            applyFilter();
+        }
+
+        void setSearchQuery(const juce::String& query)
+        {
+            searchQuery = query;
+            applyFilter();
+        }
+
+        static constexpr int starColumnWidth = 24;
+
         std::function<void(int)> onDoubleClick;
+        std::function<void()> onFavouritesChanged;
 
     private:
+        void applyFilter()
+        {
+            cachedTypes.clear();
+
+            for (const auto& desc : allTypes)
+            {
+                if (showFavouritesOnly && ! favourites.isFavourite(desc.createIdentifierString()))
+                    continue;
+
+                if (searchQuery.isNotEmpty()
+                    && ! desc.name.containsIgnoreCase(searchQuery)
+                    && ! desc.manufacturerName.containsIgnoreCase(searchQuery)
+                    && ! desc.pluginFormatName.containsIgnoreCase(searchQuery))
+                    continue;
+
+                cachedTypes.add(desc);
+            }
+        }
+
         juce::KnownPluginList& knownPluginList;
+        FavouritePluginsStore& favourites;
+        juce::Array<juce::PluginDescription> allTypes;
         juce::Array<juce::PluginDescription> cachedTypes;
         bool enabled = false;
+        bool showFavouritesOnly = false;
+        juce::String searchQuery;
     };
 
-    PluginListModel listModel { scanner.getKnownPluginList() };
+    FavouritePluginsStore favouritePluginsStore;
+    PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore };
 
     // Embeds a plugin's editor in-place (instead of a separate OS popup window),
     // wrapped in a Viewport so any editor size/aspect ratio scrolls cleanly rather
@@ -158,10 +224,38 @@ private:
     class LeftColumnPanel : public juce::Component
     {
     public:
+        // Tiny standalone TabbedButtonBar (not the heavier TabbedComponent, which
+        // manages separate content pages we don't need — we're filtering one shared
+        // ListBox, not swapping pages) offering "All"/"Favourites" tabs.
+        class PluginFilterTabs : public juce::TabbedButtonBar
+        {
+        public:
+            PluginFilterTabs() : TabbedButtonBar(TabsAtTop)
+            {
+                addTab("All", juce::Colours::transparentBlack, 0);
+                addTab("Favourites", juce::Colours::transparentBlack, 1);
+            }
+
+            std::function<void(int)> onTabChanged;
+
+        private:
+            void currentTabChanged(int newIndex, const juce::String&) override
+            {
+                if (onTabChanged)
+                    onTabChanged(newIndex);
+            }
+        };
+
         explicit LeftColumnPanel(juce::ListBox& listBoxIn) : listBox(listBoxIn)
         {
             addAndMakeVisible(listBox);
             addAndMakeVisible(resizerBar);
+            addAndMakeVisible(filterTabs);
+            addAndMakeVisible(searchBox);
+
+            searchBox.setTextToShowWhenEmpty("Search plugins...", juce::Colours::grey);
+            searchBox.onTextChange = [this] { if (onSearchChanged) onSearchChanged(searchBox.getText()); };
+            filterTabs.onTabChanged = [this](int newIndex) { if (onTabChanged) onTabChanged(newIndex); };
 
             // Seeded once here; only re-seeded (item 2, the panel) when a genuinely
             // new/different editor panel is set — see setEditorPanel() — never on
@@ -171,6 +265,15 @@ private:
             layout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
             layout.setItemLayout(2, 120, -1.0, -1.0);  // panel: min 120px, fills remainder
         }
+
+        void setListControlsEnabled(bool shouldBeEnabled)
+        {
+            filterTabs.setEnabled(shouldBeEnabled);
+            searchBox.setEnabled(shouldBeEnabled);
+        }
+
+        std::function<void(int)> onTabChanged;
+        std::function<void(const juce::String&)> onSearchChanged;
 
         // nullptr clears the panel (list fills the whole column, matching today's
         // no-panel behavior). A genuinely new/different panel re-seeds the panel's
@@ -210,13 +313,22 @@ private:
 
         void resized() override
         {
+            auto area = getLocalBounds();
+
+            auto tabsArea = area.removeFromTop(28);
+            area.removeFromTop(4);
+            filterTabs.setBounds(tabsArea);
+
+            auto searchArea = area.removeFromTop(28);
+            area.removeFromTop(4);
+            searchBox.setBounds(searchArea);
+
             if (currentPanel == nullptr)
             {
-                listBox.setBounds(getLocalBounds());
+                listBox.setBounds(area);
                 return;
             }
 
-            auto area = getLocalBounds();
             juce::Component* items[] = { &listBox, &resizerBar, currentPanel };
             layout.layOutComponents(items, 3, area.getX(), area.getY(),
                                      area.getWidth(), area.getHeight(),
@@ -225,6 +337,8 @@ private:
 
     private:
         juce::ListBox& listBox;
+        PluginFilterTabs filterTabs;
+        juce::TextEditor searchBox;
         juce::Component* currentPanel = nullptr;
         juce::StretchableLayoutManager layout;
         juce::StretchableLayoutResizerBar resizerBar { &layout, 1, false /*horizontal bar, dragged up/down*/ };
