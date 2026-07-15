@@ -43,10 +43,17 @@ public:
     juce::KnownPluginList& getKnownPluginList() { return knownPluginList; }
     juce::AudioPluginFormatManager& getFormatManager() { return formatManager; }
 
+    // Plugins skipped by the most recent scanAll() because they were still
+    // listed in the dead man's pedal file — i.e. they crashed the process
+    // during a previous scan attempt and are now being avoided rather than
+    // re-probed. Empty if nothing has ever crashed during a scan.
+    const juce::StringArray& getLastSkippedCrashers() const { return lastSkippedCrashers; }
+
 private:
     class ScanThread;
     std::unique_ptr<ScanThread> scanThread;
 
     juce::AudioPluginFormatManager formatManager;
     juce::KnownPluginList knownPluginList;
+    juce::StringArray lastSkippedCrashers;
 };

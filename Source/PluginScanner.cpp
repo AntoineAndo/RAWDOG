@@ -1,6 +1,28 @@
 #include "PluginScanner.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
+// Same "~/Library/Application Support/PixelBender/" folder FavouritePluginsStore
+// writes its settings file into — a sibling file there keeps all of this app's
+// persisted state in one place.
+static juce::File getPixelBenderSupportFolder()
+{
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("Application Support")
+        .getChildFile("PixelBender");
+}
+
+// JUCE's crash-recovery mechanism for plugin scanning: before probing a
+// plugin, PluginDirectoryScanner records its path here; the entry is removed
+// once the probe returns safely. If this process crashes mid-scan (as some
+// third-party plugins are known to do), the *next* scanner constructed with
+// this same file sees the still-present entry, treats that plugin as a known
+// crasher, and skips it — turning what would otherwise be an infinite
+// crash-on-rescan loop into a one-time loss of that single plugin.
+static juce::File getDeadMansPedalFile()
+{
+    return getPixelBenderSupportFolder().getChildFile("DeadMansPedal.txt");
+}
+
 // Runs PluginDirectoryScanner across every registered format on a background
 // thread, driving juce::ThreadWithProgressWindow's built-in modal dialog
 // (progress bar + status label + Cancel button). This is JUCE's standard
@@ -25,6 +47,14 @@ public:
 
     void run() override
     {
+        // PluginDirectoryScanner's own getFailedFiles() only reports files
+        // that were probed but yielded zero plugin types — it deliberately
+        // excludes dead man's pedal skips (those are recorded as blacklist
+        // entries on knownPluginList instead, before the probe even starts).
+        // So the only way to find out which plugins were skipped as known
+        // crashers this run is to diff the blacklist before and after.
+        const auto blacklistedBefore = knownPluginList.getBlacklistedFiles();
+
         const auto formats = formatManager.getFormats();
         const int numFormats = formats.size();
 
@@ -39,7 +69,7 @@ public:
                                                   format,
                                                   format.getDefaultLocationsToSearch(),
                                                   true, // recursive
-                                                  juce::File(),
+                                                  getDeadMansPedalFile(),
                                                   true); // allowAsync
 
             juce::String pluginBeingScanned;
@@ -50,7 +80,13 @@ public:
                 setProgress(((double) formatIndex + (double) scanner.getProgress()) / (double) juce::jmax(1, numFormats));
             }
         }
+
+        for (const auto& file : knownPluginList.getBlacklistedFiles())
+            if (! blacklistedBefore.contains(file))
+                skippedCrashers.add(file);
     }
+
+    const juce::StringArray& getSkippedCrashers() const { return skippedCrashers; }
 
     void threadComplete(bool /*userPressedCancel*/) override
     {
@@ -62,6 +98,7 @@ private:
     juce::AudioPluginFormatManager& formatManager;
     juce::KnownPluginList& knownPluginList;
     std::function<void()> onComplete;
+    juce::StringArray skippedCrashers;
 };
 
 PluginScanner::PluginScanner()
@@ -76,16 +113,9 @@ bool PluginScanner::isScanning() const
     return scanThread != nullptr && scanThread->isThreadRunning();
 }
 
-// Same "~/Library/Application Support/PixelBender/" folder FavouritePluginsStore
-// writes its settings file into (juce::PropertiesFile::Options with
-// folderName = "PixelBender", osxLibrarySubFolder = "Application Support") —
-// a sibling file there keeps all of this app's persisted state in one place.
 static juce::File getCachedPluginListFile()
 {
-    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-        .getChildFile("Application Support")
-        .getChildFile("PixelBender")
-        .getChildFile("KnownPlugins.xml");
+    return getPixelBenderSupportFolder().getChildFile("KnownPlugins.xml");
 }
 
 bool PluginScanner::loadCachedPluginList()
@@ -127,6 +157,13 @@ void PluginScanner::scanAll(std::function<void()> onComplete)
     if (isScanning())
         return;
 
-    scanThread = std::make_unique<ScanThread>(formatManager, knownPluginList, std::move(onComplete));
+    scanThread = std::make_unique<ScanThread>(formatManager, knownPluginList,
+        [this, userOnComplete = std::move(onComplete)]
+        {
+            lastSkippedCrashers = scanThread->getSkippedCrashers();
+
+            if (userOnComplete != nullptr)
+                userOnComplete();
+        });
     scanThread->launchThread();
 }

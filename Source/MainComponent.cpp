@@ -2,65 +2,6 @@
 #include "PluginHost.h"
 #include "SampleFormat.h"
 
-// Shared by both the ungrouped path and the grouped-leaf-row path: draws the
-// favourite star plus the plugin's name/manufacturer/format text, starting at
-// a caller-supplied left indent (0 for the flat list, a small extra indent for
-// leaf rows nested under a vendor header).
-void MainComponent::PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescription& desc,
-                                                      bool isFavourite, int leftIndent, int width, int height)
-{
-    g.setColour(isFavourite ? juce::Colours::yellow : juce::Colours::grey);
-    g.drawText(isFavourite ? juce::CharPointer_UTF8("\xE2\x98\x85") : juce::CharPointer_UTF8("\xE2\x98\x86"),
-                leftIndent, 0, starColumnWidth, height, juce::Justification::centred);
-
-    g.setColour(enabled ? juce::Colours::white : juce::Colours::grey);
-    g.drawText(desc.name + "  —  " + desc.manufacturerName + "  (" + desc.pluginFormatName + ")",
-                leftIndent + starColumnWidth + 4, 0, width - leftIndent - starColumnWidth - 8, height,
-                juce::Justification::centredLeft);
-}
-
-void MainComponent::PluginListModel::paintListBoxItem(int rowNumber, juce::Graphics& g,
-                                                        int width, int height, bool rowIsSelected)
-{
-    if (rowIsSelected)
-        g.fillAll(juce::Colours::lightblue);
-
-    if (groupByVendor)
-    {
-        if (! juce::isPositiveAndBelow(rowNumber, displayRows.size()))
-            return;
-
-        const auto& displayRow = displayRows.getReference(rowNumber);
-
-        if (displayRow.isHeader)
-        {
-            g.fillAll(juce::Colours::darkgrey.darker());
-
-            const bool isExpanded = expandedVendors.contains(displayRow.vendorName);
-
-            int matchingCount = 0;
-            for (const auto& desc : cachedTypes)
-                if (desc.manufacturerName == displayRow.vendorName)
-                    ++matchingCount;
-
-            g.setColour(juce::Colours::white);
-            g.drawText(isExpanded ? juce::CharPointer_UTF8("\xE2\x96\xBE") : juce::CharPointer_UTF8("\xE2\x96\xB8"),
-                        4, 0, starColumnWidth, height, juce::Justification::centred);
-            g.drawText(displayRow.vendorName + " (" + juce::String(matchingCount) + ")",
-                        starColumnWidth + 8, 0, width - starColumnWidth - 12, height, juce::Justification::centredLeft);
-            return;
-        }
-
-        if (auto* desc = getType(rowNumber))
-            paintPluginRow(g, *desc, favourites.isFavourite(desc->createIdentifierString()), groupedLeafIndent, width, height);
-
-        return;
-    }
-
-    if (auto* desc = getType(rowNumber))
-        paintPluginRow(g, *desc, favourites.isFavourite(desc->createIdentifierString()), 0, width, height);
-}
-
 MainComponent::MainComponent()
 {
     addAndMakeVisible(leftColumn);
@@ -74,7 +15,7 @@ MainComponent::MainComponent()
     outerLayout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
     outerLayout.setItemLayout(2, 250, -1.0, -1.0);  // right column: min 250px, fills remainder
 
-    juce::MenuBarModel::setMacMainMenu(this);
+    juce::MenuBarModel::setMacMainMenu(&menuModel);
 
     commandManager.registerAllCommandsForTarget(this);
     commandManager.setFirstCommandTarget(this);
@@ -183,46 +124,6 @@ MainComponent::~MainComponent()
         currentPlugin->releaseResources();
 }
 
-juce::StringArray MainComponent::getMenuBarNames()
-{
-    return { "File", "Edit" };
-}
-
-juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String& /*menuName*/)
-{
-    juce::PopupMenu menu;
-
-    const bool panelOpen = pluginEditorPanel != nullptr;
-
-    if (topLevelMenuIndex == 0)
-    {
-        menu.addItem(loadImageMenuItem, "Load Image...", ! panelOpen);
-        menu.addItem(exportImageMenuItem, "Export Image...", workingImage != nullptr);
-        menu.addItem(resetMenuItem, "Reset to Original", originalImage != nullptr && ! panelOpen);
-        menu.addSeparator();
-        menu.addItem(rescanPluginsMenuItem, "Rescan Plugins", ! scanner.isScanning() && ! panelOpen);
-    }
-    else if (topLevelMenuIndex == 1)
-    {
-        menu.addCommandItem(&commandManager, undoCommand);
-        menu.addCommandItem(&commandManager, redoCommand);
-    }
-
-    return menu;
-}
-
-void MainComponent::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
-{
-    switch (menuItemID)
-    {
-        case loadImageMenuItem:      loadImageClicked(); break;
-        case exportImageMenuItem:    exportImageClicked(); break;
-        case resetMenuItem:          resetClicked(); break;
-        case rescanPluginsMenuItem:  refreshPluginList(); break;
-        default: break;
-    }
-}
-
 void MainComponent::setStatus(const juce::String& text)
 {
     statusLabel.setText(text, juce::dontSendNotification);
@@ -238,7 +139,7 @@ void MainComponent::refreshPluginList()
     // "Rescan Plugins" must gray out immediately (native mac menu enablement
     // otherwise goes stale until menuItemsChanged() is called explicitly —
     // see PROJECT.md) so a second click can't race the background scan.
-    menuItemsChanged();
+    menuModel.menuItemsChanged();
 
     scanner.scanAll([this]
     {
@@ -246,237 +147,21 @@ void MainComponent::refreshPluginList()
         pluginListBox.updateContent();
         pluginListBox.repaint();
         scanner.saveCachedPluginListToDisk();
-        setStatus("Found " + juce::String(scanner.getKnownPluginList().getNumTypes()) + " plugin(s).");
-        menuItemsChanged();
+
+        auto status = "Found " + juce::String(scanner.getKnownPluginList().getNumTypes()) + " plugin(s).";
+
+        // Plugins that crashed the scan last time are now being skipped
+        // rather than re-probed (see PluginScanner's dead man's pedal file) —
+        // surface that so a rescan showing fewer plugins than expected isn't
+        // mistaken for a scanning bug.
+        const auto& skippedCrashers = scanner.getLastSkippedCrashers();
+
+        if (! skippedCrashers.isEmpty())
+            status << " Skipped " << skippedCrashers.size() << " plugin(s) that crashed a previous scan.";
+
+        setStatus(status);
+        menuModel.menuItemsChanged();
     });
-}
-
-void MainComponent::loadImageClicked()
-{
-    fileChooser = std::make_unique<juce::FileChooser>("Load image (24-bit BMP or raw PNM)",
-                                                        juce::File(), "*.bmp;*.pnm;*.ppm;*.pgm");
-
-    fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-        [this](const juce::FileChooser& fc)
-        {
-            auto file = fc.getResult();
-            if (! file.existsAsFile())
-                return;
-
-            juce::String errorMessage;
-            auto image = RawImage::loadFromFile(file, errorMessage);
-
-            if (image == nullptr)
-            {
-                setStatus("Failed to load image: " + errorMessage);
-                return;
-            }
-
-            originalImage = std::move(image);
-            workingImage = std::make_unique<RawImage>(*originalImage);
-            undoStack.clear();
-            redoStack.clear();
-            updateWaveform(true);
-            updatePreview(true);
-            updatePluginListEnablement();
-            menuItemsChanged();
-            setStatus("Loaded " + file.getFileName() + " (" + juce::String(workingImage->pixelBytes.getSize()) + " bytes of pixel data).");
-        });
-}
-
-void MainComponent::exportImageClicked()
-{
-    if (workingImage == nullptr)
-    {
-        setStatus("Nothing to export — load an image first.");
-        return;
-    }
-
-    // Export always produces a PNG, regardless of the format the image was
-    // loaded from — a real, widely-viewable encoded image rather than a raw
-    // BMP/PNM byte reconstruction.
-    const auto suggestedFile = juce::File::getCurrentWorkingDirectory().getChildFile("export.png");
-
-    fileChooser = std::make_unique<juce::FileChooser>("Export image", suggestedFile, "*.png");
-
-    fileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
-        [this](const juce::FileChooser& fc)
-        {
-            auto file = fc.getResult();
-            if (file == juce::File())
-                return;
-
-            if (workingImage->writeToPngFile(file))
-                setStatus("Exported to " + file.getFullPathName());
-            else
-                setStatus("Failed to write file.");
-        });
-}
-
-void MainComponent::loadAndOpenPlugin(int row)
-{
-    auto* desc = listModel.getType(row);
-    if (desc == nullptr)
-        return;
-
-    if (currentPlugin != nullptr)
-    {
-        endLivePreviewSession(false); // discards any unapplied live preview and detaches the watcher
-        currentPlugin->releaseResources();
-        currentPlugin = nullptr;
-    }
-
-    juce::String errorMessage;
-    currentPlugin = PluginHost::createInstance(scanner.getFormatManager(), *desc, sampleRate, blockSize, errorMessage);
-
-    if (currentPlugin == nullptr)
-    {
-        setStatus("Failed to load plugin: " + errorMessage);
-        return;
-    }
-
-    pluginParamWatcher.attachTo(*currentPlugin);
-
-    setStatus("Loaded plugin: " + desc->name);
-    openEditorClicked();
-}
-
-void MainComponent::openEditorClicked()
-{
-    if (currentPlugin == nullptr)
-    {
-        setStatus("Load a plugin first.");
-        return;
-    }
-
-    if (pluginEditorPanel != nullptr)
-        return;
-
-    auto* editor = currentPlugin->hasEditor() ? currentPlugin->createEditorIfNeeded()
-                                               : new juce::GenericAudioProcessorEditor(*currentPlugin);
-
-    if (editor == nullptr)
-    {
-        setStatus("This plugin has no editor UI.");
-        return;
-    }
-
-    pluginEditorPanel = std::make_unique<PluginEditorPanel>(std::unique_ptr<juce::AudioProcessorEditor>(editor), [this]
-    {
-        applyClicked();
-    },
-    [this]
-    {
-        cancelEditorClicked();
-    });
-
-    leftColumn.setEditorPanel(pluginEditorPanel.get());
-
-    // Re-seed the left/right column split so the left column starts out sized
-    // to fit this plugin's editor, capped at half the window width — same
-    // "reseed only on a newly-opened panel" pattern as leftColumn's internal
-    // list/panel split, so ordinary window resizes afterward don't reset it.
-    outerLayout.setItemLayout(0, 200, -0.5, pluginEditorPanel->getPreferredWidth());
-    resized();
-
-    updatePluginListEnablement();
-    menuItemsChanged();
-
-    // Reflects the plugin's default parameter state immediately, before any tweak,
-    // so livePreviewBytes is populated even if Apply is clicked with zero changes.
-    refreshLivePreview();
-}
-
-juce::MemoryBlock MainComponent::computeProcessedPixelBytes(juce::AudioPluginInstance& plugin,
-                                                              const juce::Range<int>& selection)
-{
-    plugin.reset(); // clean DSP state before every independent reprocessing pass, so repeated
-                     // live-preview passes against the same source bytes stay deterministic for
-                     // stateful plugins (filters, reverbs, etc).
-
-    auto buffer = SampleFormat::bytesToBuffer(workingImage->pixelBytes);
-
-    if (! selection.isEmpty())
-    {
-        const int start = selection.getStart();
-        const int length = selection.getLength();
-        juce::AudioBuffer<float> selectedBuffer(1, length);
-        selectedBuffer.copyFrom(0, 0, buffer, 0, start, length);
-        PluginHost::processWholeBuffer(plugin, selectedBuffer, blockSize);
-        buffer.copyFrom(0, start, selectedBuffer, 0, 0, length);
-    }
-    else
-    {
-        PluginHost::processWholeBuffer(plugin, buffer, blockSize);
-    }
-
-    juce::MemoryBlock result;
-    result.setSize(workingImage->pixelBytes.getSize());
-    SampleFormat::bufferToBytes(buffer, result);
-    return result;
-}
-
-void MainComponent::refreshLivePreview()
-{
-    if (workingImage == nullptr || currentPlugin == nullptr)
-        return;
-
-    const auto selection = waveformView.getSelectionSampleRange();
-    livePreviewBytes = computeProcessedPixelBytes(*currentPlugin, selection);
-
-    imagePreview.setImage(workingImage->toJuceImageFromBytes(livePreviewBytes, selection), false);
-    waveformView.setBuffer(SampleFormat::bytesToBuffer(livePreviewBytes), false);
-}
-
-void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
-{
-    if (commitToWorkingImage && ! livePreviewBytes.isEmpty())
-        workingImage->pixelBytes = livePreviewBytes;
-
-    livePreviewBytes.reset();
-    leftColumn.setEditorPanel(nullptr);
-    pluginEditorPanel.reset();
-    pluginParamWatcher.attachTo(nullptr);
-    updatePluginListEnablement();
-    menuItemsChanged();
-}
-
-void MainComponent::applyClicked()
-{
-    if (workingImage == nullptr)
-    {
-        setStatus("Load an image first.");
-        return;
-    }
-
-    if (currentPlugin == nullptr)
-    {
-        setStatus("Load a plugin first.");
-        return;
-    }
-
-    pushUndoState();
-
-    const bool hadSelection = ! waveformView.getSelectionSampleRange().isEmpty();
-
-    if (livePreviewBytes.isEmpty()) // safety net: panel open but no refresh happened yet
-        livePreviewBytes = computeProcessedPixelBytes(*currentPlugin, waveformView.getSelectionSampleRange());
-
-    setStatus(hadSelection ? "Applied " + currentPlugin->getName() + " to selection."
-                            : "Applied " + currentPlugin->getName() + " to the whole buffer.");
-
-    endLivePreviewSession(true);
-
-    updatePreview();
-    updateWaveform();
-}
-
-void MainComponent::cancelEditorClicked()
-{
-    endLivePreviewSession(false); // false = discard, do not commit to workingImage->pixelBytes
-    updatePreview();
-    updateWaveform();
-    setStatus("Cancelled — no changes applied.");
 }
 
 void MainComponent::resetClicked()
@@ -505,7 +190,7 @@ void MainComponent::undoClicked()
     updateWaveform();
     waveformView.setSelectionSampleRange(entry.selection);
     updatePreview();
-    menuItemsChanged();
+    menuModel.menuItemsChanged();
     setStatus("Undid last action.");
 }
 
@@ -522,7 +207,7 @@ void MainComponent::redoClicked()
     updateWaveform();
     waveformView.setSelectionSampleRange(entry.selection);
     updatePreview();
-    menuItemsChanged();
+    menuModel.menuItemsChanged();
     setStatus("Redid last action.");
 }
 
@@ -532,7 +217,7 @@ void MainComponent::pushUndoState()
         undoStack.push_back({ workingImage->pixelBytes, waveformView.getSelectionSampleRange() });
 
     redoStack.clear();
-    menuItemsChanged();
+    menuModel.menuItemsChanged();
 }
 
 juce::ApplicationCommandTarget* MainComponent::getNextCommandTarget()
@@ -575,23 +260,6 @@ bool MainComponent::perform(const InvocationInfo& info)
         case redoCommand: redoClicked(); return true;
         default: return false;
     }
-}
-
-void MainComponent::updatePreview(bool resetView)
-{
-    if (workingImage != nullptr)
-        imagePreview.setImage(workingImage->toJuceImage(waveformView.getSelectionSampleRange()), resetView);
-}
-
-void MainComponent::updateWaveform(bool resetView)
-{
-    if (workingImage == nullptr)
-        return;
-
-    waveformView.setBuffer(SampleFormat::bytesToBuffer(workingImage->pixelBytes), resetView);
-
-    if (resetView)
-        horizontalZoomSlider.setValue(1.0, juce::dontSendNotification);
 }
 
 void MainComponent::updatePluginListEnablement()

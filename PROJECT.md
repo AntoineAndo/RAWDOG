@@ -94,8 +94,51 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
      Plugins" always does a real scan regardless, and re-saves the cache afterward —
      this is the only way scanning happens after the first launch, per explicit user
      request to stop rescanning automatically on every open.
+   - **Crash recovery via dead man's pedal.** Some third-party plugins (observed:
+     MeldaProduction VST3s — a race between the plugin's internal `OnTimer()` and
+     JUCE destroying the probed instance mid-scan) crash the whole app when
+     `PluginDirectoryScanner` probes them. `ScanThread` passes a real dead man's
+     pedal file (`~/Library/Application Support/PixelBender/DeadMansPedal.txt`,
+     not `juce::File()`) to the scanner, so a crash mid-probe is recorded there;
+     the next scan sees the still-present entry and blacklists that plugin instead
+     of re-probing it — turning an infinite crash-loop-on-rescan into a one-time
+     skip. Skipped plugins are diffed from `KnownPluginList`'s blacklist
+     before/after the scan (not `PluginDirectoryScanner::getFailedFiles()`, which
+     deliberately excludes dead-man's-pedal skips) and surfaced via
+     `PluginScanner::getLastSkippedCrashers()` in the post-scan status message.
 
-### UI (all in `MainComponent`, the single content component of the app window)
+### UI (`MainComponent`, the single content component of the app window, plus its
+extracted collaborators)
+
+`MainComponent.h`/`.cpp` used to hold everything below directly (611/645 lines,
+mixing the plugin list, the menu bar, plugin-hosting lifecycle, image I/O, and the
+resizable-layout panel classes in one file) — it's since been split by concern,
+purely as a structural refactor with no behavior change:
+- **`PluginListModel.h/.cpp`** — the plugin list box model (vendor grouping,
+  favourites, search), unchanged, just no longer nested inside `MainComponent`.
+- **`MainMenuModel.h/.cpp`** — the native File/Edit menu bar (`juce::MenuBarModel`),
+  talking back to `MainComponent` through a small `Callbacks` struct of
+  `std::function`s (state queries + action callbacks + a `populateEditMenu` hook so
+  `MainMenuModel` never needs to know `MainComponent`'s `undoCommand`/`redoCommand`
+  IDs). `MainComponent` now owns a `MainMenuModel menuModel` member instead of
+  implementing `juce::MenuBarModel` itself, and calls `menuModel.menuItemsChanged()`
+  wherever it used to call `menuItemsChanged()` on itself.
+- **`PluginEditorPanel.h`, `LeftColumnPanel.h`, `WaveformSectionPanel.h`,
+  `RightColumnPanel.h`** — the nested layout/panel classes described below, each
+  now its own header (all still fully inline, as they were before extraction — none
+  needed a `.cpp`). Pure lift-and-shift: no external file referenced these by name,
+  so there were no call sites to update.
+- `MainComponent`'s own remaining logic is still one class, but its method
+  *definitions* are now spread across three `.cpp` files by concern rather than one
+  645-line file: `MainComponent.cpp` (ctor/dtor, `resized()`, plugin-scan
+  orchestration, undo/redo, `ApplicationCommandTarget`), `MainComponentPluginEditor.cpp`
+  (plugin hosting + live-preview lifecycle — `loadAndOpenPlugin` through
+  `endLivePreviewSession`), and `MainComponentImageIO.cpp` (image load/export +
+  preview/waveform refresh glue). This was a deliberate lighter-weight choice over
+  extracting the plugin-hosting lifecycle into its own owning class: that logic is
+  the most state-entangled part of the app (undo stack, live-preview bytes, waveform
+  selection, and image bytes all interact directly), so splitting *definitions*
+  without introducing new ownership/callback plumbing was the lower-risk move.
 
 - **Plugin list** (left column, `juce::ListBox` + custom `PluginListModel`): white
   text on dark background (default JUCE list styling was unreadable), disabled
@@ -104,7 +147,7 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   "load"/"open editor" buttons anymore, that was a deliberate UX simplification
   after early feedback.
   - **Favourites, tabs, and search** (`FavouritePluginsStore.h` +
-    `PluginListModel` additions in `MainComponent.h`/`.cpp`): each row has a
+    `PluginListModel.h/.cpp`): each row has a
     24px star column (★ filled/yellow when favourited, ☆ outline/grey
     otherwise), hit-tested in `PluginListModel::listBoxItemClicked` and toggled
     via `FavouritePluginsStore` (a `juce::ApplicationProperties`/`PropertiesFile`-
@@ -144,8 +187,9 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   interprets negative min/max as a live-recomputed proportion of current total
   size, not a one-time absolute pixel value, which is what makes the 50% cap
   keep working correctly across window resizes without any extra code).
-- **Plugin editor panel** (`MainComponent::PluginEditorPanel`, a nested class in
-  `MainComponent.h`): no longer a separate `DocumentWindow` popup — the plugin's
+- **Plugin editor panel** (`PluginEditorPanel.h` — its own header now, see the file
+  layout note at the top of this section): no longer a separate `DocumentWindow`
+  popup — the plugin's
   real editor (`createEditorIfNeeded()`, or `GenericAudioProcessorEditor` as
   fallback for plugins without a custom UI) is embedded in-place, wrapped in a
   `juce::Viewport` (editors vary wildly in size/aspect ratio, so the panel
@@ -268,9 +312,10 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   `WaveformView::setSelectionSampleRange()`, which does not itself fire
   `onBeforeSelectionChange`). Stack clears on a fresh image load. Cmd+Z / Cmd+Shift+Z
   shortcuts are wired via `juce::ApplicationCommandManager`.
-- **Menus**: `MainComponent` implements `juce::MenuBarModel` directly and installs
-  itself as the native macOS menu bar (`setMacMainMenu`/`setMacMainMenu(nullptr)` in
-  ctor/dtor). Two top-level menus: **File** (Load Image, Export Image, Reset to
+- **Menus**: `MainMenuModel` (`MainMenuModel.h/.cpp`) implements `juce::MenuBarModel`
+  and is installed as the native macOS menu bar (`setMacMainMenu(&menuModel)`/
+  `setMacMainMenu(nullptr)` in `MainComponent`'s ctor/dtor). Two top-level menus:
+  **File** (Load Image, Export Image, Reset to
   Original, Rescan Plugins — these used to be toolbar buttons, moved to the menu on
   request, which freed up layout space) and **Edit** (Undo, Redo).
   - **Export Image always writes a PNG now**, regardless of whether the image
