@@ -34,28 +34,32 @@ void ZoomableImageView::paint(juce::Graphics& g)
     g.drawImageTransformed(image, juce::AffineTransform::scale(scale).translated(offset.x, offset.y), false);
 }
 
-void ZoomableImageView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+void ZoomableImageView::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
 {
     if (! image.isValid())
         return;
 
-    const float zoomFactor = std::pow(1.1f, wheel.deltaY * 10.0f);
-    applyZoom(zoomFactor, e.position);
-}
-
-void ZoomableImageView::mouseDown(const juce::MouseEvent& e)
-{
-    dragStart = e.position;
-    offsetAtDragStart = offset;
-}
-
-void ZoomableImageView::mouseDrag(const juce::MouseEvent& e)
-{
-    if (! image.isValid())
-        return;
-
-    offset = offsetAtDragStart + (e.position - dragStart);
+    // JUCE reports two-finger trackpad scroll/pan gestures through wheel deltas
+    // normalised to roughly [-1, 1] per tick; scale up to pixels for a natural pan speed.
+    constexpr float panPixelsPerUnitDelta = 1000.0f;
+    offset += juce::Point<float>(wheel.deltaX, wheel.deltaY) * panPixelsPerUnitDelta;
     repaint();
+}
+
+void ZoomableImageView::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+{
+    if (! image.isValid())
+        return;
+
+    applyZoom(scaleFactor, e.position);
+}
+
+void ZoomableImageView::mouseDown(const juce::MouseEvent&)
+{
+}
+
+void ZoomableImageView::mouseDrag(const juce::MouseEvent&)
+{
 }
 
 void ZoomableImageView::mouseDoubleClick(const juce::MouseEvent&)

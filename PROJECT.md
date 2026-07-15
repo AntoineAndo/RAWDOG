@@ -93,17 +93,40 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   loads that plugin and immediately opens its editor — there's no separate
   "load"/"open editor" buttons anymore, that was a deliberate UX simplification
   after early feedback.
-- **Plugin editor window** (`MainComponent::PluginWindow` /
-  `EditorWithApplyButton`, nested classes in `MainComponent.h`): a `DocumentWindow`
-  wrapping the plugin's real editor (`createEditorIfNeeded()`, or
-  `GenericAudioProcessorEditor` as fallback for plugins without a custom UI), with
-  an **"Apply" button docked underneath**. Clicking Apply runs the effect and closes
-  the editor window — this was also iterated on: originally there was no in-editor
-  Apply button (users had to close the editor and hit Apply on the main window,
-  losing their tweaks in perception even though the plugin instance actually kept
-  its parameter state regardless of window visibility), then Apply didn't close the
-  window (no feedback that anything happened). Current behavior is the result of
-  two rounds of user feedback.
+- **Plugin editor panel** (`MainComponent::PluginEditorPanel`, a nested class in
+  `MainComponent.h`): no longer a separate `DocumentWindow` popup — the plugin's
+  real editor (`createEditorIfNeeded()`, or `GenericAudioProcessorEditor` as
+  fallback for plugins without a custom UI) is embedded in-place in a new column
+  between the plugin list and the image/waveform area, wrapped in a `juce::Viewport`
+  (editors vary wildly in size/aspect ratio, so the panel scrolls rather than
+  force-resizing the plugin's UI) with the column width clamped via
+  `juce::jlimit(220, 700, pluginEditorPanel->getPreferredWidth())`. An **"Apply"
+  button is docked underneath**, same as before, and remains the only way to
+  dismiss the panel (no separate Cancel/close) — clicking it commits and closes.
+  While the panel is open, tweaking the plugin's own parameters drives a **live,
+  non-destructive preview**: `PluginParameterWatcher` (`PluginParameterWatcher.h`)
+  listens via `juce::AudioProcessorListener` and coalesces bursts of parameter
+  callbacks (which may arrive off the message thread) through `juce::AsyncUpdater`
+  into `MainComponent::refreshLivePreview()`, which reprocesses the working image's
+  bytes through `computeProcessedPixelBytes()` and pushes the result into
+  `imagePreview`/`waveformView` without touching `workingImage->pixelBytes` or the
+  undo stack. `computeProcessedPixelBytes()` calls `plugin.reset()` before each
+  pass — a correctness fix: `PluginHost::processWholeBuffer()` never resets a
+  plugin's internal DSP state, so re-running it repeatedly against the same source
+  bytes (once per knob tweak) would drift for stateful plugins (filters, reverbs)
+  without this. Only `applyClicked()` commits the cached `livePreviewBytes` to
+  `workingImage` and pushes undo state; swapping/closing the panel any other way
+  discards the preview via `endLivePreviewSession(false)`. While a panel is open,
+  Load Image / Reset to Original / Rescan Plugins / Undo / Redo are all disabled
+  (gated on `pluginEditorPanel != nullptr` in `getMenuForIndex()`/`getCommandInfo()`)
+  and re-enable immediately after Apply, since reasoning about those interleaving
+  with an uncommitted live session isn't worth the complexity. This was iterated on
+  in an earlier, popup-window version of this feature: originally there was no
+  in-editor Apply button (users had to close the editor and hit Apply on the main
+  window, losing their tweaks in perception even though the plugin instance
+  actually kept its parameter state regardless of window visibility), then Apply
+  didn't close the window (no feedback that anything happened) — that history is
+  why Apply-closes-and-commits remains the one dismiss action today.
 - **`ZoomableImageView`** (`ZoomableImageView.h/.cpp`) — the image preview. Mouse
   wheel zooms centered on the cursor (standard "zoom to point" math: capture the
   image-space point under the cursor, change scale, recompute offset so that same
@@ -135,22 +158,40 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
   `juce::Range<int> highlightByteRange` and tints matching pixels toward yellow
   (`Colour::interpolatedWith(yellow, 0.5f)`), reusing the exact same per-pixel loop
   that already handles BMP/PNM layout differences — so the highlight is always
-  correctly positioned regardless of format. `WaveformView::onSelectionChanged`
-  fires on every drag frame and on clear, and `MainComponent` re-renders the
-  preview (with `resetView=false`) each time. This was pulled forward from the
-  original "v2 deferred" list because the mapping turned out to be trivial once the
-  toJuceImage() highlight parameter existed.
+  correctly positioned regardless of format. `toJuceImage()` is now a one-line
+  forwarder to `toJuceImageFromBytes(pixelBytes, highlightByteRange)`, which reads
+  an explicit `juce::MemoryBlock` instead of always reading `this->pixelBytes` —
+  added so the same layout/highlight logic can render an uncommitted live-preview
+  buffer (see plugin editor panel above) without ever mutating `pixelBytes` itself.
+  `WaveformView::onSelectionChanged` fires on every drag frame and on clear;
+  `MainComponent` re-renders the preview (with `resetView=false`) each time —
+  routed through `refreshLivePreview()` while a plugin panel is open (so the live
+  preview rescopes to the new selection), or `updatePreview()` otherwise. This was
+  pulled forward from the original "v2 deferred" list because the mapping turned
+  out to be trivial once the toJuceImage() highlight parameter existed.
 - **Apply scoping**: if `WaveformView::getSelectionSampleRange()` is non-empty,
-  `MainComponent::applyClicked()` copies just that sub-range into a temporary
-  buffer, processes it, and copies it back — bytes outside the selection are
-  provably untouched (verified via `cmp`/memcmp in a temp harness). No selection ⇒
-  whole-buffer apply (original M1 behavior).
-- **Undo**: a plain `std::vector<juce::MemoryBlock> undoStack` on `MainComponent`.
-  `pushUndoState()` (called at the top of both `applyClicked()` and
-  `resetClicked()`, before mutating) pushes a copy of the current `pixelBytes`.
-  `undoClicked()` pops and restores. Linear, no redo — wasn't asked for. Stack
-  clears on a fresh image load. **No keyboard shortcut** — explicitly requested by
-  the user to skip that for now.
+  `MainComponent::computeProcessedPixelBytes()` (the shared helper behind both the
+  live preview and Apply) copies just that sub-range into a temporary buffer,
+  processes it, and copies it back — bytes outside the selection are provably
+  untouched (verified via `cmp`/memcmp in a temp harness). No selection ⇒
+  whole-buffer apply (original M1 behavior). `applyClicked()` no longer
+  recomputes this itself — it commits whatever `livePreviewBytes` was last
+  computed by `refreshLivePreview()`, guaranteeing the committed result is
+  byte-identical to what was just previewed.
+- **Undo/redo**: `std::vector<EditorSnapshot> undoStack`/`redoStack` on
+  `MainComponent`, where `EditorSnapshot` bundles `pixelBytes` *and* the waveform
+  selection range together — so restoring history restores both the pixels and
+  which range was selected, not just the bytes. `pushUndoState()` (called at the
+  top of `applyClicked()`/`resetClicked()`, before mutating, plus from
+  `WaveformView::onBeforeSelectionChange`) snapshots the current state and clears
+  `redoStack`. A selection drag/click counts as exactly one undoable action:
+  `WaveformView` fires `onBeforeSelectionChange` once at the start of a gesture
+  (`mouseDown`), not per drag frame, so a whole click-drag collapses to a single
+  undo entry captured with the pre-gesture state. `undoClicked()`/`redoClicked()`
+  swap between the stacks, restoring `pixelBytes` and the selection (via
+  `WaveformView::setSelectionSampleRange()`, which does not itself fire
+  `onBeforeSelectionChange`). Stack clears on a fresh image load. Cmd+Z / Cmd+Shift+Z
+  shortcuts are wired via `juce::ApplicationCommandManager`.
 - **Menus**: `MainComponent` implements `juce::MenuBarModel` directly and installs
   itself as the native macOS menu bar (`setMacMainMenu`/`setMacMainMenu(nullptr)` in
   ctor/dtor). Two top-level menus: **File** (Load Image, Export Image, Reset to

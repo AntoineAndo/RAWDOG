@@ -60,6 +60,22 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
         return nullptr;
     }
 
+    // Guard against attacker-controlled/corrupt width/height before any arithmetic
+    // that could overflow: std::abs(INT32_MIN) is UB, and rowStride's
+    // ((width*3+3)/4)*4 can overflow a signed int for huge width. Reject anything
+    // outside a generous-but-finite bound (and reject INT32_MIN specifically, since
+    // it has no valid positive absolute value) before doing any of that math. This
+    // also caps the pixel-data size we're about to validate/allocate for, so a
+    // maliciously huge declared size is rejected cleanly instead of attempting a
+    // huge allocation.
+    constexpr int32_t maxDimension = 32768;
+
+    if (height == INT32_MIN || width > maxDimension || std::abs((int64_t) height) > maxDimension)
+    {
+        errorMessage = "BMP dimensions out of supported range.";
+        return nullptr;
+    }
+
     if (offBits >= data.getSize())
     {
         errorMessage = "BMP pixel data offset is out of range.";
@@ -69,10 +85,26 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
     auto result = std::make_unique<RawImage>();
     result->format = Format::bmp;
     result->width = width;
-    result->height = std::abs(height);
+    result->height = (int) std::abs((int64_t) height);
     result->bottomUp = height > 0;
     result->channels = 3;
-    result->rowStride = ((width * 3 + 3) / 4) * 4;
+
+    // Widen to int64_t for the row-stride computation: width is now bounded by
+    // maxDimension above, so this can't overflow, but keep the arithmetic itself
+    // safely widened rather than relying solely on the earlier bound.
+    const int64_t rowStride64 = ((((int64_t) width * 3) + 3) / 4) * 4;
+    result->rowStride = (int) rowStride64;
+
+    // Mirror loadPnm's validation: reject the file if its declared dimensions
+    // claim more pixel data than actually remains after the header.
+    const int64_t pixelDataSize64 = rowStride64 * (int64_t) result->height;
+    const int64_t availableAfterHeader = (int64_t) data.getSize() - (int64_t) offBits;
+
+    if (pixelDataSize64 > availableAfterHeader)
+    {
+        errorMessage = "BMP file is smaller than its header declares.";
+        return nullptr;
+    }
 
     result->headerBytes.replaceWith(data.getData(), offBits);
     result->pixelBytes.replaceWith(static_cast<const uint8_t*>(data.getData()) + offBits, data.getSize() - offBits);
@@ -181,18 +213,23 @@ bool RawImage::writeToFile(const juce::File& file) const
 
     stream->setPosition(0);
     stream->truncate();
-    stream->write(headerBytes.getData(), headerBytes.getSize());
-    stream->write(pixelBytes.getData(), pixelBytes.getSize());
+
+    if (! stream->write(headerBytes.getData(), headerBytes.getSize()))
+        return false;
+
+    if (! stream->write(pixelBytes.getData(), pixelBytes.getSize()))
+        return false;
+
     return true;
 }
 
-juce::Image RawImage::toJuceImage(juce::Range<int> highlightByteRange) const
+juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender, juce::Range<int> highlightByteRange) const
 {
     juce::Image image(juce::Image::RGB, width, height, true);
     juce::Image::BitmapData bitmap(image, juce::Image::BitmapData::writeOnly);
 
-    const auto* px = static_cast<const uint8_t*>(pixelBytes.getData());
-    const size_t available = pixelBytes.getSize();
+    const auto* px = static_cast<const uint8_t*>(bytesToRender.getData());
+    const size_t available = bytesToRender.getSize();
 
     for (int y = 0; y < height; ++y)
     {

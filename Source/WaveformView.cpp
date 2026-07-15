@@ -4,22 +4,42 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
 {
     waveformData = std::move(newBuffer);
 
+    bool selectionChanged = false;
+
     if (resetView)
     {
         viewStartSample = 0;
         viewLengthSamples = waveformData.getNumSamples();
         hasSelection = false;
+        selectionChanged = true;
     }
     else
     {
         viewLengthSamples = juce::jlimit(0, waveformData.getNumSamples(), viewLengthSamples);
         viewStartSample = juce::jlimit(0, juce::jmax(0, waveformData.getNumSamples() - viewLengthSamples), viewStartSample);
+
+        // The selection range is independent of the view range above, so it
+        // needs its own re-clamp against the new buffer's sample count — a
+        // stale selection could otherwise point past the end of a shorter
+        // buffer (e.g. after Apply changes the sample count).
+        if (hasSelection)
+        {
+            const int numSamples = waveformData.getNumSamples();
+            selectionStartSample = juce::jlimit(0, numSamples, selectionStartSample);
+            selectionEndSample = juce::jlimit(0, numSamples, selectionEndSample);
+
+            if (juce::jmin(selectionStartSample, selectionEndSample) >= juce::jmax(selectionStartSample, selectionEndSample))
+            {
+                hasSelection = false;
+                selectionChanged = true;
+            }
+        }
     }
 
     if (onViewChanged != nullptr)
         onViewChanged();
 
-    if (resetView && onSelectionChanged != nullptr)
+    if (selectionChanged && onSelectionChanged != nullptr)
         onSelectionChanged();
 
     repaint();
@@ -27,7 +47,29 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
 
 void WaveformView::clearSelection()
 {
+    if (onBeforeSelectionChange != nullptr)
+        onBeforeSelectionChange();
+
     hasSelection = false;
+
+    if (onSelectionChanged != nullptr)
+        onSelectionChanged();
+
+    repaint();
+}
+
+void WaveformView::setSelectionSampleRange(juce::Range<int> newSelection)
+{
+    if (newSelection.isEmpty())
+    {
+        hasSelection = false;
+    }
+    else
+    {
+        hasSelection = true;
+        selectionStartSample = newSelection.getStart();
+        selectionEndSample = newSelection.getEnd();
+    }
 
     if (onSelectionChanged != nullptr)
         onSelectionChanged();
@@ -144,6 +186,9 @@ void WaveformView::paint(juce::Graphics& g)
 
 void WaveformView::mouseDown(const juce::MouseEvent& e)
 {
+    if (onBeforeSelectionChange != nullptr)
+        onBeforeSelectionChange();
+
     selectionStartSample = selectionEndSample = xToSample(e.x);
     hasSelection = true;
 

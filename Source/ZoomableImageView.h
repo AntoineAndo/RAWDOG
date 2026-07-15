@@ -2,8 +2,9 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// Displays an image with mouse-wheel zoom (centred on the cursor) and
-// click-drag panning. Double-click resets to fit-the-viewport.
+// Displays an image with pinch-to-zoom (centred on the cursor) and
+// two-finger trackpad panning. Double-click resets to fit-the-viewport.
+// mouseDown/mouseDrag are currently no-ops, reserved for a future feature.
 class ZoomableImageView : public juce::Component
 {
 public:
@@ -15,6 +16,7 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
@@ -26,7 +28,4 @@ private:
     juce::Image image;
     float scale = 1.0f;
     juce::Point<float> offset;
-
-    juce::Point<float> dragStart;
-    juce::Point<float> offsetAtDragStart;
 };

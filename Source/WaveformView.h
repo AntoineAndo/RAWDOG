@@ -20,6 +20,11 @@ public:
     void setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView = true);
     void clearSelection();
 
+    // Restores a selection programmatically (e.g. undo/redo) without treating it as a
+    // new user gesture — does NOT fire onBeforeSelectionChange. An empty range means
+    // "no selection", matching the convention documented on getSelectionSampleRange().
+    void setSelectionSampleRange(juce::Range<int> newSelection);
+
     // Purely a display multiplier on amplitude — the underlying data is unaffected.
     // Values are clipped to the component's height once scaled, like a vertical zoom.
     void setVerticalZoom(float newZoom) { verticalZoom = newZoom; repaint(); }
@@ -42,6 +47,12 @@ public:
     // Fired whenever the selection changes (drag in progress, or cleared), so a
     // host can e.g. highlight the corresponding pixels in an image preview.
     std::function<void()> onSelectionChanged;
+
+    // Fired at the very start of a new selection gesture (mouseDown, or clearSelection()),
+    // before the old selection state is mutated — so a host can snapshot the "before"
+    // state for undo. Not fired from mouseDrag (that would push one undo entry per drag
+    // frame) or from setSelectionSampleRange() (a programmatic restore, not a user gesture).
+    std::function<void()> onBeforeSelectionChange;
 
     void paint(juce::Graphics& g) override;
     void mouseDown(const juce::MouseEvent& e) override;
