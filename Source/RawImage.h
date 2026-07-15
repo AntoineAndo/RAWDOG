@@ -14,7 +14,9 @@ public:
     bool writeToFile(const juce::File& file) const;
 
     // Renders the current pixelBytes (post- or pre-processing) as a juce::Image for preview.
-    juce::Image toJuceImage() const;
+    // highlightByteRange, if non-empty, tints the pixels whose bytes fall within it — used to
+    // show which part of the image the current waveform selection maps onto.
+    juce::Image toJuceImage(juce::Range<int> highlightByteRange = {}) const;
 
     juce::MemoryBlock headerBytes;
     juce::MemoryBlock pixelBytes;

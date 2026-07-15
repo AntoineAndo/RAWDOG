@@ -19,12 +19,19 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
     if (onViewChanged != nullptr)
         onViewChanged();
 
+    if (resetView && onSelectionChanged != nullptr)
+        onSelectionChanged();
+
     repaint();
 }
 
 void WaveformView::clearSelection()
 {
     hasSelection = false;
+
+    if (onSelectionChanged != nullptr)
+        onSelectionChanged();
+
     repaint();
 }
 
@@ -139,11 +146,19 @@ void WaveformView::mouseDown(const juce::MouseEvent& e)
 {
     selectionStartSample = selectionEndSample = xToSample(e.x);
     hasSelection = true;
+
+    if (onSelectionChanged != nullptr)
+        onSelectionChanged();
+
     repaint();
 }
 
 void WaveformView::mouseDrag(const juce::MouseEvent& e)
 {
     selectionEndSample = xToSample(juce::jlimit(0, getWidth(), e.x));
+
+    if (onSelectionChanged != nullptr)
+        onSelectionChanged();
+
     repaint();
 }

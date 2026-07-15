@@ -39,6 +39,10 @@ public:
     // so a host can keep an external scrollbar in sync.
     std::function<void()> onViewChanged;
 
+    // Fired whenever the selection changes (drag in progress, or cleared), so a
+    // host can e.g. highlight the corresponding pixels in an image preview.
+    std::function<void()> onSelectionChanged;
+
     void paint(juce::Graphics& g) override;
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;

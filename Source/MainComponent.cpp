@@ -51,6 +51,7 @@ MainComponent::MainComponent()
 
     horizontalScrollBar.addListener(this);
     waveformView.onViewChanged = [this] { syncScrollBarToView(); };
+    waveformView.onSelectionChanged = [this] { updatePreview(); };
 
     pluginListBox.setModel(&listModel);
     pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
@@ -106,8 +107,8 @@ void MainComponent::loadImageClicked()
 
             originalImage = std::move(image);
             workingImage = std::make_unique<RawImage>(*originalImage);
-            updatePreview();
             updateWaveform(true);
+            updatePreview();
             updatePluginListEnablement();
             setStatus("Loaded " + file.getFileName() + " (" + juce::String(workingImage->pixelBytes.getSize()) + " bytes of pixel data).");
         });
@@ -244,15 +245,15 @@ void MainComponent::resetClicked()
         return;
 
     workingImage = std::make_unique<RawImage>(*originalImage);
-    updatePreview();
     updateWaveform(true);
+    updatePreview();
     setStatus("Reset to original image.");
 }
 
 void MainComponent::updatePreview()
 {
     if (workingImage != nullptr)
-        imagePreview.setImage(workingImage->toJuceImage());
+        imagePreview.setImage(workingImage->toJuceImage(waveformView.getSelectionSampleRange()));
 }
 
 void MainComponent::updateWaveform(bool resetView)

@@ -186,7 +186,7 @@ bool RawImage::writeToFile(const juce::File& file) const
     return true;
 }
 
-juce::Image RawImage::toJuceImage() const
+juce::Image RawImage::toJuceImage(juce::Range<int> highlightByteRange) const
 {
     juce::Image image(juce::Image::RGB, width, height, true);
     juce::Image::BitmapData bitmap(image, juce::Image::BitmapData::writeOnly);
@@ -228,7 +228,13 @@ juce::Image RawImage::toJuceImage() const
                 }
             }
 
-            bitmap.setPixelColour(x, y, juce::Colour(r, g, b));
+            auto colour = juce::Colour(r, g, b);
+
+            if (! highlightByteRange.isEmpty()
+                && highlightByteRange.intersects({ (int) byteOffset, (int) (byteOffset + (size_t) channels) }))
+                colour = colour.interpolatedWith(juce::Colours::yellow, 0.5f);
+
+            bitmap.setPixelColour(x, y, colour);
         }
     }
 
