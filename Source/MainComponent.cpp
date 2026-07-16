@@ -24,14 +24,26 @@ MainComponent::MainComponent()
 
     waveformZoomSlider.setRange(1.0, 20.0, 0.1);
     waveformZoomSlider.setValue(1.0);
-    waveformZoomSlider.onValueChange = [this] { waveformView.setVerticalZoom((float) waveformZoomSlider.getValue()); };
+    waveformZoomSlider.onValueChange = [this]
+    {
+        const auto zoom = (float) waveformZoomSlider.getValue();
+        waveformView.setVerticalZoom(zoom);
+        for (auto& view : channelWaveformViews)
+            view.setVerticalZoom(zoom);
+    };
     waveformZoomLabel.setJustificationType(juce::Justification::centred);
     waveformZoomLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
 
     horizontalZoomSlider.setRange(1.0, 200.0, 0.1);
     horizontalZoomSlider.setSkewFactorFromMidPoint(10.0);
     horizontalZoomSlider.setValue(1.0);
-    horizontalZoomSlider.onValueChange = [this] { waveformView.setHorizontalZoom((float) horizontalZoomSlider.getValue()); };
+    horizontalZoomSlider.onValueChange = [this]
+    {
+        const auto zoom = (float) horizontalZoomSlider.getValue();
+        waveformView.setHorizontalZoom(zoom);
+        for (auto& view : channelWaveformViews)
+            view.setHorizontalZoom(zoom);
+    };
 
     imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
 
@@ -46,6 +58,39 @@ MainComponent::MainComponent()
         if (pluginEditorPanel == nullptr)
             pushUndoState();
     };
+
+    splitModeToggle.setClickingTogglesState(true);
+    splitModeToggle.onClick = [this] { setSplitMode(splitModeToggle.getToggleState()); };
+
+    sampleModeCombo.addItem("Bipolar", 1);
+    sampleModeCombo.addItem("Unipolar", 2);
+    sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
+    sampleModeCombo.onChange = [this] { sampleModeChanged(); };
+    sampleModeLabel.setVisible(false);
+    sampleModeCombo.setVisible(false); // hidden until a plugin panel opens
+
+    for (int c = 0; c < 3; ++c)
+    {
+        auto* view = &channelWaveformViews[(size_t) c];
+        view->onViewChanged = [this] { syncScrollBarToView(); };
+        view->onSelectionChanged = [this] { triggerAsyncUpdate(); };
+        view->onBeforeSelectionChange = [this, c]
+        {
+            activeSelectionChannel = (RawImage::Channel) c;
+
+            // Only one lane has an active selection at a time — starting a new
+            // one elsewhere clears the others. setSelectionSampleRange({}) (not
+            // clearSelection()) deliberately, since clearSelection() itself fires
+            // onBeforeSelectionChange and would recurse into pushUndoState() for
+            // the "losing" lane.
+            for (int other = 0; other < 3; ++other)
+                if (other != c)
+                    channelWaveformViews[(size_t) other].setSelectionSampleRange({});
+
+            if (pluginEditorPanel == nullptr)
+                pushUndoState();
+        };
+    }
 
     pluginParamWatcher.onPluginParametersChanged = [this] { refreshLivePreview(); };
 
@@ -180,13 +225,14 @@ void MainComponent::undoClicked()
     if (undoStack.empty() || workingImage == nullptr)
         return;
 
-    redoStack.push_back({ workingImage->pixelBytes, waveformView.getSelectionSampleRange() });
+    const auto currentScope = getCurrentSelectionScope();
+    redoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel, currentScope.range });
     const auto entry = undoStack.back();
     undoStack.pop_back();
 
-    workingImage->pixelBytes = entry.pixelBytes;
+    workingImage->restoreSnapshot(entry.headerBytes, entry.pixelBytes);
     updateWaveform();
-    waveformView.setSelectionSampleRange(entry.selection);
+    restoreSelectionScope(entry.selectionChannel, entry.selection);
     updatePreview();
     menuModel.menuItemsChanged();
     setStatus("Undid last action.");
@@ -197,13 +243,14 @@ void MainComponent::redoClicked()
     if (redoStack.empty() || workingImage == nullptr)
         return;
 
-    undoStack.push_back({ workingImage->pixelBytes, waveformView.getSelectionSampleRange() });
+    const auto currentScope = getCurrentSelectionScope();
+    undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel, currentScope.range });
     const auto entry = redoStack.back();
     redoStack.pop_back();
 
-    workingImage->pixelBytes = entry.pixelBytes;
+    workingImage->restoreSnapshot(entry.headerBytes, entry.pixelBytes);
     updateWaveform();
-    waveformView.setSelectionSampleRange(entry.selection);
+    restoreSelectionScope(entry.selectionChannel, entry.selection);
     updatePreview();
     menuModel.menuItemsChanged();
     setStatus("Redid last action.");
@@ -212,10 +259,72 @@ void MainComponent::redoClicked()
 void MainComponent::pushUndoState()
 {
     if (workingImage != nullptr)
-        undoStack.push_back({ workingImage->pixelBytes, waveformView.getSelectionSampleRange() });
+    {
+        const auto scope = getCurrentSelectionScope();
+        undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, scope.channel, scope.range });
+    }
 
     redoStack.clear();
     menuModel.menuItemsChanged();
+}
+
+MainComponent::SelectionScope MainComponent::getCurrentSelectionScope() const
+{
+    if (splitModeToggle.getToggleState() && activeSelectionChannel.has_value())
+        return { activeSelectionChannel, channelWaveformViews[(size_t) *activeSelectionChannel].getSelectionSampleRange() };
+
+    if (splitModeToggle.getToggleState())
+        return { std::nullopt, {} }; // split mode on, but no lane has an active selection yet
+
+    return { std::nullopt, waveformView.getSelectionSampleRange() };
+}
+
+void MainComponent::restoreSelectionScope(std::optional<RawImage::Channel> channel, juce::Range<int> range)
+{
+    waveformView.setSelectionSampleRange({});
+
+    activeSelectionChannel = channel;
+    setSplitMode(channel.has_value());
+
+    if (channel.has_value())
+        channelWaveformViews[(size_t) *channel].setSelectionSampleRange(range);
+    else
+        waveformView.setSelectionSampleRange(range);
+}
+
+void MainComponent::setSplitMode(bool enabled)
+{
+    splitModeToggle.setToggleState(enabled, juce::dontSendNotification);
+    rightColumn.updateSplitVisibility();
+
+    if (enabled)
+    {
+        refreshChannelWaveforms(true);
+    }
+    else
+    {
+        activeSelectionChannel.reset();
+        for (auto& view : channelWaveformViews)
+            view.setSelectionSampleRange({});
+    }
+
+    updatePreview();
+}
+
+void MainComponent::refreshChannelWaveforms(bool resetView)
+{
+    if (workingImage == nullptr || ! workingImage->hasChannelPlanes())
+        return;
+
+    const RawImage::Channel channels[3] = { RawImage::Channel::red, RawImage::Channel::green, RawImage::Channel::blue };
+
+    for (int c = 0; c < 3; ++c)
+        channelWaveformViews[(size_t) c].setBuffer(SampleFormat::bytesToBuffer(workingImage->getChannelPlane(channels[c]), workingImage->getSampleMode()), resetView);
+}
+
+WaveformView& MainComponent::primaryWaveformView()
+{
+    return splitModeToggle.getToggleState() ? channelWaveformViews[0] : waveformView;
 }
 
 juce::ApplicationCommandTarget* MainComponent::getNextCommandTarget()
@@ -236,13 +345,13 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
         case undoCommand:
             result.setInfo("Undo", "Undo the last action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier);
-            result.setActive(! undoStack.empty() && pluginEditorPanel == nullptr);
+            result.setActive(! undoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr);
             break;
 
         case redoCommand:
             result.setInfo("Redo", "Redo the last undone action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
-            result.setActive(! redoStack.empty() && pluginEditorPanel == nullptr);
+            result.setActive(! redoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr);
             break;
 
         default:
@@ -263,30 +372,67 @@ bool MainComponent::perform(const InvocationInfo& info)
 void MainComponent::updatePluginListEnablement()
 {
     const bool hasImage = workingImage != nullptr;
-    pluginListBox.setEnabled(hasImage);
-    listModel.setEnabled(hasImage);
-    leftColumn.setListControlsEnabled(hasImage);
+
+    // Hard-walled off while the header editor is open, separately from the
+    // plugin-editor case: double-clicking a plugin mid-header-edit would
+    // otherwise silently discard the in-progress edit via loadAndOpenPlugin()'s
+    // own panel-swap logic, which is a worse surprise than just disabling the
+    // list outright.
+    const bool listInteractive = hasImage && headerEditorPanel == nullptr;
+    pluginListBox.setEnabled(listInteractive);
+    listModel.setEnabled(listInteractive);
+    leftColumn.setListControlsEnabled(listInteractive);
     pluginListBox.repaint();
 
     waveformZoomSlider.setEnabled(hasImage);
     horizontalZoomSlider.setEnabled(hasImage);
     horizontalScrollBar.setEnabled(hasImage);
+
+    // Split-channel view only makes sense for a 3-channel chunky image (BMP-
+    // 24bit/PNM-P6) and never while the header editor is open (a live BMP
+    // header edit can change biBitCount away from 24, making hasChannelPlanes()
+    // false mid-edit, and header edits have no per-channel meaning at all).
+    const bool splitAllowed = hasImage && headerEditorPanel == nullptr && workingImage->hasChannelPlanes();
+    splitModeToggle.setEnabled(splitAllowed);
+
+    if (! splitAllowed && splitModeToggle.getToggleState())
+        setSplitMode(false);
+
+    // The bipolar/unipolar dropdown is only relevant while the plugin editor
+    // panel is open — this function already runs after every open/close.
+    const bool pluginPanelOpen = pluginEditorPanel != nullptr;
+    sampleModeLabel.setVisible(pluginPanelOpen);
+    sampleModeCombo.setVisible(pluginPanelOpen);
 }
 
 void MainComponent::syncScrollBarToView()
 {
-    const int numSamples = waveformView.getNumSamples();
+    auto& primary = primaryWaveformView();
+    const int numSamples = primary.getNumSamples();
 
     horizontalScrollBar.setRangeLimits(0.0, (double) juce::jmax(1, numSamples));
-    horizontalScrollBar.setCurrentRange((double) waveformView.getViewStartSample(),
-                                         (double) waveformView.getViewLengthSamples(),
+    horizontalScrollBar.setCurrentRange((double) primary.getViewStartSample(),
+                                         (double) primary.getViewLengthSamples(),
                                          juce::dontSendNotification);
 }
 
 void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
 {
-    if (scrollBarThatHasMoved == &horizontalScrollBar)
-        waveformView.setViewStart((int) newRangeStart);
+    if (scrollBarThatHasMoved != &horizontalScrollBar)
+        return;
+
+    // Scroll position is absolute, and a channel plane has a different total
+    // sample count than the interleaved buffer (width*height vs.
+    // width*height*3) — convert to a fraction of the primary view's own
+    // sample count, then re-apply that fraction to every view's own count, so
+    // all 4 stay showing the same proportional field of view.
+    auto& primary = primaryWaveformView();
+    const int primarySamples = primary.getNumSamples();
+    const double fraction = primarySamples > 0 ? newRangeStart / (double) primarySamples : 0.0;
+
+    waveformView.setViewStart((int) (fraction * waveformView.getNumSamples()));
+    for (auto& view : channelWaveformViews)
+        view.setViewStart((int) (fraction * view.getNumSamples()));
 }
 
 void MainComponent::handleAsyncUpdate()

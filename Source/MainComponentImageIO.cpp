@@ -27,6 +27,15 @@ void MainComponent::loadImageClicked()
             workingImage = std::make_unique<RawImage>(*originalImage);
             undoStack.clear();
             redoStack.clear();
+
+            // A freshly-loaded RawImage always defaults to bipolar, but the combo
+            // and waveform views are session-long UI state left over from any
+            // previous image — reset them to match.
+            sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
+            waveformView.setSampleMode(SampleFormat::Mode::bipolar);
+            for (auto& view : channelWaveformViews)
+                view.setSampleMode(SampleFormat::Mode::bipolar);
+
             updateWaveform(true);
             updatePreview(true);
             updatePluginListEnablement();
@@ -66,8 +75,15 @@ void MainComponent::exportImageClicked()
 
 void MainComponent::updatePreview(bool resetView)
 {
-    if (workingImage != nullptr)
-        imagePreview.setImage(workingImage->toJuceImage(waveformView.getSelectionSampleRange()), resetView);
+    if (workingImage == nullptr)
+        return;
+
+    const auto scope = getCurrentSelectionScope();
+
+    if (scope.channel.has_value())
+        imagePreview.setImage(workingImage->toJuceImage(*scope.channel, scope.range), resetView);
+    else
+        imagePreview.setImage(workingImage->toJuceImage(scope.range), resetView);
 }
 
 void MainComponent::updateWaveform(bool resetView)
@@ -75,7 +91,7 @@ void MainComponent::updateWaveform(bool resetView)
     if (workingImage == nullptr)
         return;
 
-    waveformView.setBuffer(SampleFormat::bytesToBuffer(workingImage->pixelBytes), resetView);
+    waveformView.setBuffer(SampleFormat::bytesToBuffer(workingImage->getVisualOrderedPixelBytes(), workingImage->getSampleMode()), resetView);
 
     if (resetView)
         horizontalZoomSlider.setValue(1.0, juce::dontSendNotification);

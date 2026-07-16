@@ -2,11 +2,15 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include "SampleFormat.h"
 
 // Renders a mono buffer as a min/max waveform and lets the user drag out a
 // time-range selection. The selection is expressed in sample indices, which
-// map 1:1 onto byte offsets in the pixel buffer for the current fixed
-// 8-bit-PCM sample format.
+// map 1:1 onto byte offsets in the current fixed 8-bit-PCM sample format's
+// buffer — for the whole-buffer (non-split) waveform, that buffer is
+// RawImage::getVisualOrderedPixelBytes() (visual top-down, unpadded order),
+// NOT necessarily pixelBytes' own raw file-storage order, which can be
+// bottom-up/padded for BMP. See RawImage.h for why.
 //
 // Supports a horizontal zoom/scroll window (viewStartSample/viewLengthSamples)
 // so fine structure can be inspected and selected precisely, since vertical
@@ -38,6 +42,12 @@ public:
     // Purely a display multiplier on amplitude — the underlying data is unaffected.
     // Values are clipped to the component's height once scaled, like a vertical zoom.
     void setVerticalZoom(float newZoom) { verticalZoom = newZoom; repaint(); }
+
+    // Which byte<->float mapping the buffer currently passed to setBuffer()/
+    // updateSampleRange() was converted with — purely a display concern here
+    // (paint() draws bipolar samples centred, unipolar samples bottom-anchored
+    // using the full lane height), the actual conversion happens in SampleFormat.
+    void setSampleMode(SampleFormat::Mode newMode) { sampleMode = newMode; repaint(); }
 
     // zoom == 1 shows the whole buffer; higher values narrow the visible window.
     void setHorizontalZoom(float newZoom);
@@ -76,6 +86,7 @@ private:
 
     juce::AudioBuffer<float> waveformData;
     float verticalZoom = 1.0f;
+    SampleFormat::Mode sampleMode = SampleFormat::Mode::bipolar;
 
     int viewStartSample = 0;
     int viewLengthSamples = 0;

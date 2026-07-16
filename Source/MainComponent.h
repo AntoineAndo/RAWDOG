@@ -1,7 +1,10 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <array>
+#include <optional>
 #include "FavouritePluginsStore.h"
+#include "HeaderEditorPanel.h"
 #include "LeftColumnPanel.h"
 #include "MainMenuModel.h"
 #include "PluginEditorPanel.h"
@@ -44,6 +47,11 @@ private:
     void openEditorClicked();
     void applyClicked();
     void cancelEditorClicked();
+    void openHeaderEditorClicked();
+    void applyHeaderEditClicked();
+    void cancelHeaderEditClicked();
+    void endHeaderEditSession();
+    void refreshHeaderLivePreview(const RawImage::BmpEditableHeaderFields& candidate);
     void resetClicked();
     void undoClicked();
     void redoClicked();
@@ -51,13 +59,50 @@ private:
     void updatePreview(bool resetView = false);
     void updateWaveform(bool resetView = false);
     void updatePluginListEnablement();
+    void sampleModeChanged();
     void syncScrollBarToView();
     void setStatus(const juce::String& text);
 
     juce::MemoryBlock computeProcessedPixelBytes(juce::AudioPluginInstance& plugin,
-                                                  const juce::Range<int>& selection);
+                                                  const juce::Range<int>& selection,
+                                                  std::optional<RawImage::Channel> channel = std::nullopt);
     void refreshLivePreview();
     void endLivePreviewSession(bool commitToWorkingImage);
+
+    // Which selection is "the" current one for Apply/undo/highlight purposes:
+    // a channel-scoped lane's selection when split mode is on and a lane has
+    // an active selection, or the plain interleaved waveform's selection
+    // otherwise. channel == nullopt means "whole interleaved buffer" either way.
+    struct SelectionScope
+    {
+        std::optional<RawImage::Channel> channel;
+        juce::Range<int> range;
+    };
+
+    SelectionScope getCurrentSelectionScope() const;
+
+    // Restores a captured SelectionScope (from an undo/redo entry): clears
+    // every lane's selection first, switches split mode on/off to match
+    // whether the entry has a channel (so the restored selection is actually
+    // visible), then sets just the target lane's range.
+    void restoreSelectionScope(std::optional<RawImage::Channel> channel, juce::Range<int> range);
+
+    // Enables/disables split-channel display. Entering split mode lazily
+    // (re)computes the 3 channel planes (cheap if already up to date, per
+    // RawImage's own dirty-flag caching) and populates all 3 lanes; leaving
+    // it clears the per-channel selection-tracking state. Does not touch
+    // pixelBytes/headerBytes — purely a view/selection-tracking concern.
+    void setSplitMode(bool enabled);
+
+    // Repopulates all 3 channel lanes' buffers from workingImage's current
+    // per-channel planes. No-op if there's no image or it isn't a 3-channel one.
+    void refreshChannelWaveforms(bool resetView);
+
+    // Whichever waveform view currently drives the shared horizontal
+    // scrollbar/zoom sync: channelWaveformViews[0] in split mode (arbitrary
+    // but consistent — all 3 lanes share the same sample count), waveformView
+    // otherwise.
+    WaveformView& primaryWaveformView();
 
     void scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
 
@@ -80,6 +125,10 @@ private:
 
     ZoomableImageView imagePreview;
     WaveformView waveformView;
+    std::array<WaveformView, 3> channelWaveformViews; // indexed by (int) RawImage::Channel
+    juce::TextButton splitModeToggle { "Split Channels" };
+    juce::Label sampleModeLabel { {}, "Sample Mode:" };
+    juce::ComboBox sampleModeCombo;
     juce::ListBox pluginListBox;
     juce::Label statusLabel;
 
@@ -88,7 +137,7 @@ private:
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },
-        [this] { return pluginEditorPanel != nullptr; },
+        [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr; },
         [this] { return workingImage != nullptr; },
         [this] { return originalImage != nullptr; },
         [this] { loadImageClicked(); },
@@ -99,7 +148,9 @@ private:
         {
             menu.addCommandItem(&commandManager, undoCommand);
             menu.addCommandItem(&commandManager, redoCommand);
-        }
+        },
+        [this] { return workingImage != nullptr && workingImage->getFormat() == RawImage::Format::bmp; },
+        [this] { openHeaderEditorClicked(); }
     } };
 
     // Parents the plugin list and (optionally) the currently-open PluginEditorPanel;
@@ -108,7 +159,9 @@ private:
     // order) so the references/pointers they parent are already valid.
     LeftColumnPanel leftColumn { pluginListBox };
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, waveformZoomSlider,
-                                    waveformZoomLabel, horizontalZoomSlider, horizontalScrollBar };
+                                    waveformZoomLabel, horizontalZoomSlider, horizontalScrollBar,
+                                    channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
+                                    splitModeToggle, sampleModeLabel, sampleModeCombo };
 
     juce::StretchableLayoutManager outerLayout;
     juce::StretchableLayoutResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
@@ -121,16 +174,42 @@ private:
     std::unique_ptr<RawImage> workingImage;
     std::unique_ptr<juce::AudioPluginInstance> currentPlugin;
     std::unique_ptr<PluginEditorPanel> pluginEditorPanel;
+
+    // While headerEditorPanel is open, headerEditScratch is a scratch copy of
+    // workingImage that every field edit is applied to for live preview —
+    // workingImage itself is only touched by applyHeaderEditClicked().
+    std::unique_ptr<RawImage> headerEditScratch;
+    std::unique_ptr<HeaderEditorPanel> headerEditorPanel;
+
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     // Caches the last live-preview result while pluginEditorPanel is open; Apply
     // reuses it directly instead of recomputing, so the committed bytes are
-    // guaranteed identical to what was just previewed.
+    // guaranteed identical to what was just previewed. livePreviewBytes is
+    // always the full interleaved buffer in pixelBytes' own real (possibly
+    // bottom-up/padded) layout — what's actually rendered for display, via
+    // previewWithChannelBytes() or previewWithVisualOrderedBytes() depending on
+    // scope. livePreviewChannel tracks which of the two "edited source" fields
+    // below is the current one: livePreviewChannelPlaneBytes (an edited
+    // channel plane, when scoped) or livePreviewVisualOrderBytes (the edited
+    // whole visual-order buffer, otherwise) — whichever applies is what
+    // endLivePreviewSession() splices back via applyChannelBytes() or
+    // applyVisualOrderedBytes() respectively, instead of a full setPixelBytes().
     juce::MemoryBlock livePreviewBytes;
+    std::optional<RawImage::Channel> livePreviewChannel;
+    juce::MemoryBlock livePreviewChannelPlaneBytes;
+    juce::MemoryBlock livePreviewVisualOrderBytes;
+
+    // Tracks which channel lane (if any) currently owns the live selection
+    // while split mode is on — only one lane has an active selection at a
+    // time; starting a new one in a different lane clears the others.
+    std::optional<RawImage::Channel> activeSelectionChannel;
 
     struct EditorSnapshot
     {
+        juce::MemoryBlock headerBytes;
         juce::MemoryBlock pixelBytes;
+        std::optional<RawImage::Channel> selectionChannel;
         juce::Range<int> selection;
     };
 

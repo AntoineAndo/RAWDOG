@@ -81,6 +81,8 @@ public:
             }
         }
 
+        removeDuplicateAudioUnits();
+
         for (const auto& file : knownPluginList.getBlacklistedFiles())
             if (! blacklistedBefore.contains(file))
                 skippedCrashers.add(file);
@@ -95,6 +97,25 @@ public:
     }
 
 private:
+    // Some plugins ship as both a VST3 and an AU; hosting both formats means
+    // the exact same plugin (same name+vendor) shows up twice in the plugin
+    // list for no benefit, since either format works equally well here. Keep
+    // VST3 as the preferred copy and drop only the AU side of an actual
+    // duplicate — a plugin that exists in just one format (VST3-only or
+    // AU-only) is untouched either way.
+    void removeDuplicateAudioUnits()
+    {
+        juce::StringArray vst3Keys;
+
+        for (const auto& type : knownPluginList.getTypes())
+            if (type.pluginFormatName == "VST3")
+                vst3Keys.add(type.name + "|" + type.manufacturerName);
+
+        for (const auto& type : knownPluginList.getTypes())
+            if (type.pluginFormatName == "AudioUnit" && vst3Keys.contains(type.name + "|" + type.manufacturerName))
+                knownPluginList.removeType(type);
+    }
+
     juce::AudioPluginFormatManager& formatManager;
     juce::KnownPluginList& knownPluginList;
     std::function<void()> onComplete;
@@ -103,6 +124,10 @@ private:
 
 PluginScanner::PluginScanner()
 {
+    // Both VST3 and AU are scanned — some plugins ship only as one or the
+    // other. When a plugin ships as both, ScanThread::removeDuplicateAudioUnits()
+    // drops the AU copy after scanning, keeping VST3 as the preferred format
+    // rather than showing the same plugin twice.
     juce::addDefaultFormatsToManager(formatManager);
 }
 

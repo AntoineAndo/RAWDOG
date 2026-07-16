@@ -4,7 +4,9 @@
 #include <functional>
 
 // Scans the standard VST3 and Audio Unit plugin locations and keeps a
-// juce::KnownPluginList populated with what it finds.
+// juce::KnownPluginList populated with what it finds. When a plugin ships as
+// both a VST3 and an AU, only the VST3 copy is kept — see
+// ScanThread::removeDuplicateAudioUnits() in the .cpp.
 class PluginScanner
 {
 public:

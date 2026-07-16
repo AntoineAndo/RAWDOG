@@ -152,6 +152,16 @@ void WaveformView::paint(juce::Graphics& g)
     const float midY = (float) height * 0.5f;
     const int numSamples = waveformData.getNumSamples();
 
+    // bipolar: centred on midY, samples range [-1,1]. unipolar: anchored at
+    // the bottom, samples range [0,1] — using the full lane height instead of
+    // only the top half, since byte 0 (silence) is a genuine floor, not one
+    // of two symmetric extremes.
+    const bool bipolar = sampleMode == SampleFormat::Mode::bipolar;
+    const float baseline = bipolar ? midY : (float) height;
+    const float scale = bipolar ? midY : (float) height;
+    const float loClamp = bipolar ? -1.0f : 0.0f;
+    const float hiClamp = 1.0f;
+
     if (numSamples > 0 && width > 0 && viewLengthSamples > 0)
     {
         const auto* samples = waveformData.getReadPointer(0);
@@ -164,18 +174,33 @@ void WaveformView::paint(juce::Graphics& g)
             int endSample = viewStartSample + (int) ((juce::int64) (x + 1) * viewLengthSamples / width);
             endSample = juce::jmin(juce::jmax(endSample, startSample + 1), viewStartSample + viewLengthSamples);
 
+            // Seed from the first real sample in range, not from a hardcoded
+            // 0.0f -- seeding at 0 silently acts as an implicit floor/ceiling:
+            // if every sample in this column is on one side of zero (e.g. a
+            // long run of full-scale-negative bytes, as happens throughout a
+            // single colour channel's plane wherever that channel is simply
+            // absent), the opposite extreme incorrectly gets reported as 0
+            // instead of tracking the true (still one-sided) min/max, making
+            // the trace look like it only reaches the centre line instead of
+            // the real extreme.
             float minV = 0.0f, maxV = 0.0f;
-            for (int s = startSample; s < endSample && s < numSamples; ++s)
+
+            if (startSample < numSamples)
             {
-                minV = juce::jmin(minV, samples[s]);
-                maxV = juce::jmax(maxV, samples[s]);
+                minV = maxV = samples[startSample];
+
+                for (int s = startSample + 1; s < endSample && s < numSamples; ++s)
+                {
+                    minV = juce::jmin(minV, samples[s]);
+                    maxV = juce::jmax(maxV, samples[s]);
+                }
             }
 
-            minV = juce::jlimit(-1.0f, 1.0f, minV * verticalZoom);
-            maxV = juce::jlimit(-1.0f, 1.0f, maxV * verticalZoom);
+            minV = juce::jlimit(loClamp, hiClamp, minV * verticalZoom);
+            maxV = juce::jlimit(loClamp, hiClamp, maxV * verticalZoom);
 
-            const float y1 = midY - maxV * midY;
-            const float y2 = juce::jmax(midY - minV * midY, y1 + 1.0f);
+            const float y1 = baseline - maxV * scale;
+            const float y2 = juce::jmax(baseline - minV * scale, y1 + 1.0f);
             g.drawLine((float) x, y1, (float) x, y2);
         }
     }

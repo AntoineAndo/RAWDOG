@@ -54,23 +54,108 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
 
 1. **`RawImage`** (`RawImage.h/.cpp`) — loads/saves **24-bit uncompressed BMP** and
    **raw PNM (P5/P6)**. On load it splits the file into two `juce::MemoryBlock`s:
-   `headerBytes` (kept byte-for-byte untouched — this is the "protected region" from
-   the original Audacity technique, whatever a real image viewer needs to parse the
-   file) and `pixelBytes` (the only thing a plugin is ever allowed to touch). BMP
-   parsing follows `bfOffBits` from the file header rather than assuming a fixed 54
-   bytes, so it's correct even with unusual DIB header variants. `toJuceImage()`
+   `headerBytes` and `pixelBytes` (the only thing a plugin is ever allowed to touch).
+   BMP parsing follows `bfOffBits` from the file header rather than assuming a fixed
+   54 bytes, so it's correct even with unusual DIB header variants. `toJuceImage()`
    renders the current `pixelBytes` back into a displayable `juce::Image`, handling
    BMP's bottom-up-row/BGR-order quirks vs PNM's top-down/RGB. It also accepts an
    optional highlight byte-range (see below).
    - TIFF is **not** supported — deliberately deferred (see Deferred Work). BMP/PNM
      were chosen because their headers are simple/fixed-size, so "protected region"
      is trivial to define correctly, unlike TIFF's IFD/strip-offset structure.
+   - **`headerBytes` is no longer fully opaque for BMP.** It originally was —
+     "the protected region from the original Audacity technique, kept byte-for-byte
+     untouched." Two features since punched through that: BMP header editing (below)
+     lets a user rewrite the 5 structural fields that drive this app's own decoding,
+     and BMP bit-depth conversion (below) discards the original header outright and
+     synthesizes a fresh one. `headerBytes` is still never touched for PNM, and for
+     BMP it's still never touched by the plugin-apply pipeline — only by these two
+     deliberate, user-initiated rewrite paths.
 
-2. **`SampleFormat.h`** — the byte↔float bridge. **Currently hardcoded to 8-bit
-   unsigned PCM**: `float = (byte - 128) / 128`. This is the single biggest piece of
-   unfinished scope — see M3 below. A `WaveformView.h` comment and this doc both
-   flag the assumption "sample index == byte index," which breaks the moment a
-   multi-byte sample format is added.
+   - **BMP header editing** (`getBmpHeaderFields()`, `validateBmpHeaderFields()`,
+     `applyBmpHeaderFields()`, `restoreSnapshot()`, `moveHeaderPixelBoundary()`; UI in
+     `HeaderEditorPanel.h`/`MainComponentHeaderEditor.cpp`; "Edit Header..." in the
+     File menu). Exposes all 16 documented `BITMAPFILEHEADER`+`BITMAPINFOHEADER`
+     fields for **read-only display** (`BmpHeaderFields`, parsed fresh from
+     `headerBytes` on every call — no cached state to drift), but only the 5 that
+     actually drive this app's own decode/render logic are **editable**
+     (`BmpEditableHeaderFields`: `bfOffBits`/`biWidth`/`biHeight`/`biBitCount`/
+     `biCompression`). Validation is two-tier: blocking errors for genuine crash/UB
+     risk (bad dimensions, an offset that would truncate the 54-byte header
+     `applyBmpHeaderFields()` is about to serialize), warnings-only for "this will
+     look wrong but won't crash" (non-24-bit depth, non-zero compression) — this is
+     a *glitch-art tool*, so letting the header lie on purpose is often the point.
+     Editing `bfOffBits` moves the `headerBytes`/`pixelBytes` boundary via
+     `moveHeaderPixelBoundary()`, re-labelling bytes between the two blocks (growing
+     the offset pulls former leading pixel bytes into the header, and vice versa)
+     without mutating any byte's content — `headerBytes.size() + pixelBytes.size()`
+     is conserved, so grow-then-shrink-back round-trips losslessly. The panel follows
+     the same live-preview/Apply/Cancel shape as the plugin editor (below): edits
+     apply live to a scratch `RawImage` copy for preview, only committing to the real
+     `workingImage` (and pushing an undo entry) on Apply.
+   - **Per-channel plane API** (`Channel` enum, `hasChannelPlanes()`,
+     `getChannelPlane()`, `applyChannelBytes()`, `previewWithChannelBytes()`,
+     `setPixelBytes()`; UI in `WaveformSplitPanel.h` + the `WaveformSectionPanel`/
+     `RightColumnPanel` split-toggle extension). Lets a 3-channel chunky image (BMP
+     24-bit or PNM P6 — `channels == 3`) be viewed and edited **per color channel**
+     instead of only as one interleaved byte stream. `getChannelPlane(Channel)`
+     lazily deinterleaves `pixelBytes` into 3 one-byte-per-pixel buffers in visual
+     top-down row-major order (index `i` == pixel `(i % width, i / width)` —
+     deliberately *not* `pixelBytes`' own possibly-bottom-up/padded row order, so a
+     plane's layout doesn't depend on `bottomUp`), cached and invalidated via a
+     `planesDirty` flag rather than recomputed on every edit — deinterleaving a
+     1080p image is a few-ms linear pass, cheap once but wasteful if paid on every
+     edit whether or not split view is even open. `applyChannelBytes()` re-interleaves
+     one edited channel back into `pixelBytes` and updates *only that channel's* cache
+     entry, leaving the other two valid — the entire point of the lazy design.
+     `setPixelBytes()` is a new explicit setter replacing a direct
+     `pixelBytes = ...` field assignment that used to exist in
+     `endLivePreviewSession()`, so plane-cache invalidation can never be silently
+     bypassed. Editing is **fully per-channel**: a selection on one channel's
+     waveform lane can drive Apply, processing just that channel's plane through the
+     plugin and re-interleaving the result — see `MainComponent::SelectionScope`/
+     `getCurrentSelectionScope()` below. The image-preview highlight outline uses a
+     second `toJuceImage()`/`toJuceImageFromBytes()` overload for this case, colored
+     to match the active channel (red/green/blue) instead of the fixed yellow used
+     for a whole-buffer/interleaved selection.
+   - **Non-24bpp BMP support via load-time conversion** (`loadBmp()`'s
+     `isPalette`/`is32Rgb`/`is32Bitfields` paths). Rather than teaching every
+     downstream subsystem (waveform, channel planes, header editing, the apply
+     pipeline) about other bit depths, 1bpp/4bpp/8bpp (palette-indexed) and 32bpp
+     (`BI_RGB` implicit BGRX, or `BI_BITFIELDS` explicit per-channel bitmasks) are
+     **expanded into an ordinary 24-bit BGR buffer once, at load time** — everything
+     downstream then sees exactly what it would for a native 24-bit file, with zero
+     special-casing. Palette formats look the color table up (immediately after the
+     40-byte `BITMAPINFOHEADER`, `biClrUsed` or `2^bitCount` entries × 4 bytes BGRX,
+     defaulted to a full-size black-filled table so an out-of-range index can never
+     go out of bounds); `BI_BITFIELDS` extracts each channel generally via its mask's
+     lowest set bit (shift) and popcount (bit width), normalizing to 8 bits rather
+     than assuming byte-aligned masks. Because the original header no longer
+     describes the expanded pixel data, it's discarded and a fresh, self-consistent
+     54-byte header is synthesized (`buildBmp24Header()`) instead of being patched.
+     Only the classic 40-byte `BITMAPINFOHEADER` is supported for the palette/mask
+     lookup offset — a file using the larger `BITMAPV4HEADER`/`V5HEADER` variants
+     (common from modern screenshot tools for `BI_BITFIELDS`) is rejected with a
+     clear error rather than silently misreading unrelated bytes as a palette/masks.
+     **1bpp/4bpp were deliberately not given native (unconverted) support** — packing
+     multiple pixels per byte fundamentally conflicts with this app's whole
+     "byte is the smallest independently-glitchable unit" model (waveform selection,
+     `SampleFormat`, channel planes, header-editing offsets all assume it) — a
+     one-byte glitch would flip up to 8 *unrelated* pixels to arbitrary palette
+     colors at once, producing blocky corruption rather than the smooth
+     channel-level artifacts the rest of this tool aims for. Converting first sidesteps
+     this entirely: there's no sub-byte anything left once expanded. **16bpp is not
+     supported** (not implemented, no format-detection path exists for it).
+
+2. **`SampleFormat.h`** — the byte↔float bridge. **Fixed 8-bit PCM**, with a choice
+   of mapping selected per-image via `SampleFormat::Mode`/`RawImage::getSampleMode()`/
+   `setSampleMode()` (defaulting to bipolar): **bipolar** (`float = (byte-128)/128`,
+   byte 128 = silence — correct for real audio) or **unipolar** (`float = byte/255`,
+   byte 0 = silence — correct for image intensity, see the bipolar/unipolar
+   milestone entry below for why). Still only 8-bit, though — multi-byte sample
+   formats remain the single biggest piece of unfinished scope, see M3 below. A
+   `WaveformView.h` comment and this doc both flag the assumption "sample index ==
+   byte index," which breaks the moment a multi-byte sample format is added.
 
 3. **`PluginHost`** (`PluginHost.h/.cpp`) — thin wrapper: instantiate an
    `AudioPluginInstance` from a `PluginDescription` (via
@@ -223,11 +308,55 @@ purely as a structural refactor with no behavior change:
   actually kept its parameter state regardless of window visibility), then Apply
   didn't close the window (no feedback that anything happened) — that history is
   why Apply-closes-and-commits remains the one dismiss action today.
+- **Header editor panel** (`HeaderEditorPanel.h`/`MainComponentHeaderEditor.cpp`,
+  opened via File → "Edit Header...", BMP only). Shares `PluginEditorPanel`'s
+  embedded-panel-with-Apply/Cancel shape and `leftColumn`'s single panel slot
+  (`LeftColumnPanel::setEditorPanel()`), so the two are mutually exclusive for
+  free — you can't have both open at once. 5 editable fields (see `RawImage`'s
+  BMP-header-editing entry above) plus 11 read-only informational fields, laid
+  out in a scrollable `juce::Viewport`. Every edit re-renders a scratch `RawImage`
+  copy live (image preview + waveform), with a warning label (amber, non-blocking)
+  and error label (red, blocks Apply) reflecting `validateBmpHeaderFields()`'s
+  two-tier result. While open, Load Image/Reset/Rescan/Undo/Redo/the plugin list
+  are all disabled (same `updatePluginListEnablement()` gating pattern as the
+  plugin editor), and split-channel mode is force-disabled and locked — a header
+  edit can change `biBitCount` away from 24 mid-edit, which would make
+  `hasChannelPlanes()` false, and header edits have no per-channel meaning at all.
+- **Split-channel waveform** (`WaveformSplitPanel.h`, the `WaveformSectionPanel`/
+  `RightColumnPanel` toggle-button extension). A `splitModeToggle` button next to
+  the existing zoom controls swaps the single interleaved `WaveformView` for 3
+  side-by-side lanes (`std::array<WaveformView, 3> channelWaveformViews`, indexed
+  by `RawImage::Channel`), each fed that channel's deinterleaved plane via the
+  exact same `WaveformView` API used for the interleaved lane (`setBuffer`/
+  `updateSampleRange`/selection) — the component itself needed zero changes,
+  composition (3 existing instances in a new dumb container) was the whole trick.
+  Only one lane has an active selection at a time: each lane's
+  `onBeforeSelectionChange` records itself as `MainComponent::activeSelectionChannel`
+  and clears the other two via `setSelectionSampleRange({})` (not
+  `clearSelection()`, which would itself fire `onBeforeSelectionChange` and
+  recurse into `pushUndoState()` for the "losing" lane). Zoom/scroll stay synced
+  across all 4 views from a single driver (`MainComponent`'s slider/scrollbar
+  callbacks fan out to every view — `WaveformView` has no scroll/zoom gesture of
+  its own) — zoom is a ratio so it "just works" regardless of each view's own
+  sample count (a channel plane has `width×height` samples vs. the interleaved
+  buffer's `width×height×3`), scroll position is converted to a fraction of the
+  primary view's sample count and reapplied to each view's own count. The toggle
+  is disabled whenever `! workingImage->hasChannelPlanes()` (grayscale PNM, or a
+  BMP header-edited to a non-24-bit depth) or the header editor is open — both
+  wired into `updatePluginListEnablement()`.
 - **`ZoomableImageView`** (`ZoomableImageView.h/.cpp`) — the image preview. Mouse
-  wheel zooms centered on the cursor (standard "zoom to point" math: capture the
-  image-space point under the cursor, change scale, recompute offset so that same
-  point stays under the cursor), click-drag pans, double-click resets to
-  fit-the-viewport. Takes a `resetView` bool on `setImage()` — `true` only on a
+  wheel/two-finger trackpad scroll pans (JUCE reports trackpad swipes as wheel
+  deltas — see `mouseWheelMove`), pinch gesture zooms centered on the cursor
+  (standard "zoom to point" math: capture the image-space point under the
+  cursor, change scale, recompute offset so that same point stays under the
+  cursor), double-click resets to fit-the-viewport. `mouseDrag` is currently a
+  no-op (click-drag does **not** pan — panning is wheel/trackpad-only per
+  above), reserved for a future feature. **Clicking the preview while no image
+  is loaded triggers the same "Load Image..." flow as the File menu**
+  (`onClickWithNoImage` callback, fired from `mouseDown` only when
+  `! image.isValid()`, wired to `MainComponent::loadImageClicked()`) — the
+  placeholder text ("Click to load an image") advertises this; the guard means
+  it can never misfire once a real image is loaded. Takes a `resetView` bool on `setImage()` — `true` only on a
   genuinely new image (load/Reset), `false` on in-place refreshes (Apply, selection
   highlight redraw) so the user's zoom/pan isn't yanked out from under them
   mid-workflow. This same `resetView` pattern is used in `WaveformView` for the
@@ -236,14 +365,34 @@ purely as a structural refactor with no behavior change:
   must not reset user-adjusted view state unless the underlying data's *identity*
   (not just its bytes) genuinely changed.
 - **`WaveformView`** (`WaveformView.h/.cpp`) — renders the pixel buffer as a
-  min/max-per-column waveform. Click-drag selects a **sample range** (which, given
-  the current fixed 8-bit-PCM format, is numerically identical to a **byte range**
-  in `pixelBytes` — this equivalence is called out in comments and will need
-  revisiting when M3 lands). Has its own vertical zoom (a pure display-amplitude
+  min/max-per-column waveform. Click-drag selects a **sample range**, which (given
+  the current fixed 8-bit-PCM format) is numerically identical to a **byte range**
+  in whichever buffer was passed to `setBuffer()` — for the interleaved (non-split)
+  waveform that's `RawImage::getVisualOrderedPixelBytes()` (visual top-down, unpadded
+  order, **not** `pixelBytes` directly — see the row-flip bug fix in Milestones
+  below for why), for a split lane it's `getChannelPlane()`. This sample-index-as-
+  byte-index equivalence will need revisiting when M3 lands. Has its own vertical zoom (a pure display-amplitude
   multiplier, clipped to ±1 — doesn't touch underlying data) and horizontal
   zoom+scroll (a `juce::Slider` + `juce::ScrollBar`, wired via
   `WaveformView::onViewChanged` callback so `MainComponent::syncScrollBarToView()`
   keeps the scrollbar's thumb size/position in sync with the view window).
+  - **Bug fixed: `paint()`'s per-column min/max was seeded from a hardcoded
+    `0.0f`** (silence) instead of the first real sample in that column's range.
+    This silently acted as an implicit floor/ceiling: whenever every sample in a
+    displayed column sat on one side of zero — which is common for a single
+    channel's plane (e.g. a region with none of that color reads as a long run
+    of full-scale-*negative* bytes, not silence, per the byte↔float mapping
+    below), and was essentially never true for the original interleaved BGR
+    byte stream, which is why this went unnoticed until the per-channel
+    split-waveform feature made it obvious — the opposite extreme incorrectly
+    reported as exactly 0 instead of tracking the true (still one-sided)
+    min/max, making a uniformly-quiet region's trace look like it only reached
+    the centre line rather than the real extreme. Found via a user report
+    ("there's still a signal in the red channel after the red square") that
+    was traced end-to-end (`RawImage::getChannelPlane()` → `SampleFormat::
+    bytesToBuffer()`, both confirmed correct against the user's actual file via
+    a temporary diagnostic harness) before landing on `paint()` itself as the
+    actual culprit. Fixed by seeding `minV`/`maxV` from `samples[startSample]`.
   - Horizontal zoom was added after user feedback that vertical zoom alone
     couldn't make the waveform legible: image byte data tends to sit in big flat
     runs near the amplitude extremes (bright/dark regions), so vertical zoom just
@@ -264,7 +413,10 @@ purely as a structural refactor with no behavior change:
     once up front, so all three remain a single Undo step and the live
     preview highlight updates during the drag, exactly like creating always did.
 - **Selection → image highlight**: `RawImage::toJuceImage()` takes an optional
-  `juce::Range<int> highlightByteRange`. **This used to fill every selected
+  `juce::Range<int> highlightByteRange`, in visual top-down, unpadded byte order
+  (`getVisualOrderedPixelBytes()`'s coordinate space) — **not** necessarily
+  `pixelBytes`' own raw file-storage order, see the row-flip bug fix in
+  Milestones below. **This used to fill every selected
   pixel with a 50% yellow blend**, but that made it impossible to judge a
   plugin's actual live-preview result underneath the tint — it's now a
   **thin (2px) outline around the selection's boundary only**, leaving
@@ -289,6 +441,15 @@ purely as a structural refactor with no behavior change:
   preview rescopes to the new selection), or `updatePreview()` otherwise. This was
   pulled forward from the original "v2 deferred" list because the mapping turned
   out to be trivial once the toJuceImage() highlight parameter existed.
+  - **Channel-scoped highlight**: a second `toJuceImageFromBytes()` overload takes
+    a `RawImage::Channel` + a plane-sample range (`getChannelPlane()`'s coordinate
+    space) instead of an interleaved byte range, outlined in that channel's own
+    color (red/green/blue) instead of the fixed yellow. Its `rowSelection`
+    precompute is actually simpler than the interleaved case — a channel plane is
+    already stored in visual top-down row-major order, so a row's selected span is
+    a direct arithmetic slice with no `rowStride`/`bottomUp`/`channels` adjustment
+    needed. Both overloads share the same per-pixel border-drawing loop, factored
+    out into `renderWithRowSelection()`.
   - **Live-preview performance**: on a large image (e.g. full HD, ~6.2MB of pixel
     bytes), the naive version of the above made dragging a selection while a
     plugin panel was open feel frozen — every mouse-move frame re-ran the plugin
@@ -322,20 +483,42 @@ purely as a structural refactor with no behavior change:
   recomputes this itself — it commits whatever `livePreviewBytes` was last
   computed by `refreshLivePreview()`, guaranteeing the committed result is
   byte-identical to what was just previewed.
+  - **Channel-scoped variant**: `computeProcessedPixelBytes()` takes an optional
+    `RawImage::Channel` — when set, its source/destination is
+    `workingImage->getChannelPlane(channel)` (a deinterleaved copy) instead of
+    `getVisualOrderedPixelBytes()` (the whole-buffer analogue — see the row-flip
+    bug fix in Milestones below), same selection-scoping logic either way. Which
+    scope is "the"
+    current one — a channel-plane selection (split-waveform mode, a lane has an
+    active selection) or the plain whole-buffer selection — is resolved once via
+    `MainComponent::SelectionScope`/`getCurrentSelectionScope()`, consumed by
+    `computeProcessedPixelBytes()`, `refreshLivePreview()`, `updatePreview()`
+    (for highlight color), and undo/redo (below). Commit branches the same way:
+    `endLivePreviewSession()` calls `workingImage->applyChannelBytes()` for a
+    channel-scoped commit (preserving the other two channels' plane caches) or
+    `workingImage->applyVisualOrderedBytes()` otherwise (splicing back into
+    `pixelBytes`' real, possibly bottom-up/padded layout).
 - **Undo/redo**: `std::vector<EditorSnapshot> undoStack`/`redoStack` on
-  `MainComponent`, where `EditorSnapshot` bundles `pixelBytes` *and* the waveform
-  selection range together — so restoring history restores both the pixels and
-  which range was selected, not just the bytes. `pushUndoState()` (called at the
-  top of `applyClicked()`/`resetClicked()`, before mutating, plus from
-  `WaveformView::onBeforeSelectionChange`) snapshots the current state and clears
-  `redoStack`. A selection drag/click counts as exactly one undoable action:
-  `WaveformView` fires `onBeforeSelectionChange` once at the start of a gesture
-  (`mouseDown`), not per drag frame, so a whole click-drag collapses to a single
-  undo entry captured with the pre-gesture state. `undoClicked()`/`redoClicked()`
-  swap between the stacks, restoring `pixelBytes` and the selection (via
-  `WaveformView::setSelectionSampleRange()`, which does not itself fire
-  `onBeforeSelectionChange`). Stack clears on a fresh image load. Cmd+Z / Cmd+Shift+Z
-  shortcuts are wired via `juce::ApplicationCommandManager`.
+  `MainComponent`, where `EditorSnapshot` bundles `headerBytes`, `pixelBytes`, the
+  waveform selection range, *and* (since the split-channel feature) which channel
+  — if any — owned that selection, so restoring history restores the pixels, the
+  header, which range was selected, and whether it was a channel-scoped selection,
+  not just the bytes. `pushUndoState()` (called at the top of
+  `applyClicked()`/`resetClicked()`/`applyHeaderEditClicked()`, before mutating,
+  plus from every waveform lane's `onBeforeSelectionChange`) snapshots the current
+  state via `getCurrentSelectionScope()` and clears `redoStack`. A selection
+  drag/click counts as exactly one undoable action: each `WaveformView` fires
+  `onBeforeSelectionChange` once at the start of a gesture (`mouseDown`), not per
+  drag frame, so a whole click-drag collapses to a single undo entry captured with
+  the pre-gesture state. `undoClicked()`/`redoClicked()` swap between the stacks,
+  restore `headerBytes`/`pixelBytes` via `RawImage::restoreSnapshot()` (which
+  re-derives BMP geometry from the restored header), then restore the selection via
+  `MainComponent::restoreSelectionScope()` — which also flips the split-mode toggle
+  on/off to match whether the entry has a channel, so the restored selection is
+  actually visible rather than landing on a hidden panel. Stack clears on a fresh
+  image load. Cmd+Z / Cmd+Shift+Z shortcuts are wired via
+  `juce::ApplicationCommandManager`, deactivated while either the plugin editor or
+  the header editor panel is open.
 - **Menus**: `MainMenuModel` (`MainMenuModel.h/.cpp`) implements `juce::MenuBarModel`
   and is installed as the native macOS menu bar (`setMacMainMenu(&menuModel)`/
   `setMacMainMenu(nullptr)` in `MainComponent`'s ctor/dtor). Two top-level menus:
@@ -395,11 +578,90 @@ purely as a structural refactor with no behavior change:
   visible underneath.
 - *(user-requested polish)* — Export Image always writes a PNG now, regardless
   of the original loaded format.
+- *(structural refactor, no behavior change)* — `MainComponent.h`/`.cpp` (was
+  611/645 lines, mixing plugin-list/menu-bar/hosting/image-IO/layout concerns
+  in one file) split into `PluginListModel`, `MainMenuModel`, four layout/panel
+  header classes, and three `MainComponent*.cpp` files by concern — see the UI
+  section above for the new file layout and rationale.
+- *(performance fix)* — live preview on a large image no longer feels frozen
+  while dragging a waveform selection: drag-triggered recomputes are now
+  debounced (`juce::AsyncUpdater`, same idiom as parameter-change coalescing),
+  and byte↔float conversion in `computeProcessedPixelBytes()`/`refreshLivePreview()`
+  is scoped to the selected sub-range instead of the whole buffer — see the
+  "Live-preview performance" note above.
+- *(user-requested polish)* — clicking the empty image preview now opens the
+  same "Load Image..." dialog as the File menu, instead of doing nothing.
+- *(user-requested feature)* — BMP header editing: all 16 documented
+  `BITMAPFILEHEADER`+`BITMAPINFOHEADER` fields readable, the 5 that drive this
+  app's own decoding editable with live preview and two-tier (blocking/warning)
+  validation, via a new "Edit Header..." panel. Inverts the previous "headerBytes
+  is fully protected" invariant for BMP specifically — see `RawImage`'s
+  entry above for why that's still safe.
+- *(user-requested feature)* — per-channel split waveform: view and edit each
+  color channel's byte stream as its own waveform lane (toggle next to the
+  existing zoom controls), fully editable — Apply can be scoped to a single
+  channel, re-interleaving the result back — with a color-matched highlight
+  outline on the image preview.
+- *(user-requested feature)* — non-24bpp BMP support (1/4/8/32bpp) via
+  conversion to a full 24-bit buffer at load time, so no other subsystem needs
+  to know about other bit depths. Prompted by a real load failure on a 4bpp
+  file; 1bpp/4bpp were deliberately *not* given native (unconverted) support —
+  see `RawImage`'s entry above for why that would fight this app's whole
+  byte-addressable model.
+- *(user-requested feature)* — **bipolar/unipolar sample-mode toggle**, fixing
+  the byte↔float encoding mismatch described at length in earlier revisions of
+  this doc: `SampleFormat.h`'s bipolar mapping (`float = (byte-128)/128`) is
+  correct for real audio but wrong for image intensity, where byte 0 ("no
+  colour") should mean silence, not a full-scale-negative signal — a
+  gain-reducing plugin effect would otherwise paradoxically *create* visible
+  content in channels/regions that had none. Added `SampleFormat::Mode`
+  (bipolar/unipolar) as a parameter on `bytesToBuffer()`/`bufferToBytes()`,
+  stored per-image on `RawImage` (`getSampleMode()`/`setSampleMode()`,
+  defaulting to bipolar), and threaded through every call site (image load,
+  plugin apply/live-preview, header-edit live preview, per-channel split
+  waveforms). `WaveformView::paint()` now renders unipolar data bottom-anchored
+  using the full lane height instead of assuming a signal centred on zero.
+  Surfaced as a `ComboBox` in a new header strip above the image preview
+  (`RightColumnPanel`), visible only while the plugin editor panel is open;
+  changing it re-renders the live preview and waveform(s) immediately via
+  `refreshLivePreview()`. Deliberately a session-level view setting, not part
+  of undo/redo — resets to bipolar on every new image load.
+- *(bug fix)* — **the interleaved (non-split) waveform was row-flipped for
+  bottom-up BMPs.** Its sample index was the raw `pixelBytes` byte offset
+  directly; a standard BMP stores rows bottom-up (byte 0 = the image's
+  *bottom* row), so selecting the end of the waveform highlighted/glitched
+  the *top* of the image instead of the bottom — surprising, and inconsistent
+  with the split-channel waveform, which already normalizes to visual
+  top-down order via `RawImage::getChannelPlane()` (built for the split
+  feature specifically to avoid this). Fixed by generalizing that same
+  pattern to the whole interleaved buffer: `RawImage::getVisualOrderedPixelBytes()`/
+  `applyVisualOrderedBytes()`/`previewWithVisualOrderedBytes()` mirror
+  `getChannelPlane()`/`applyChannelBytes()`/`previewWithChannelBytes()` but for
+  the still-interleaved (not deinterleaved-per-channel) whole buffer, cached
+  the same way (`visualOrderDirty`, invalidated at every site `planesDirty`
+  already was, plus `applyChannelBytes()` — a channel edit changes the real
+  interleaved bytes too, so it now invalidates the whole-buffer cache as well
+  as its own channel-plane one). `toJuceImageFromBytes()`'s `highlightByteRange`
+  parameter's contract changed project-wide from "a raw `pixelBytes` offset"
+  to "a visual top-down, unpadded offset" — matching what the channel-plane
+  highlight overload already used, and what every interleaved waveform call
+  site (`updateWaveform()`, `computeProcessedPixelBytes()`,
+  `refreshHeaderLivePreview()`) now builds its buffer from. Because the
+  live-preview/Apply pipeline's edited result is now in visual-order space but
+  the image preview needs pixelBytes' real (possibly bottom-up/padded) layout
+  to render colours, `MainComponent` gained a `livePreviewVisualOrderBytes`
+  field (parallel to the existing `livePreviewChannelPlaneBytes`) so the
+  "edited source" and "rendered/committed" buffers can differ, same split the
+  channel-scoped path already had. **Behaviour change**: selecting the start of
+  the interleaved waveform now highlights/glitches the *top* of the image and
+  the end the *bottom* (previously reversed) — any workflow built around the
+  old mapping will see different, now-correct, results for the same numeric
+  selection. BMP row-padding bytes are also no longer part of the interleaved
+  waveform/selection at all (stripped by the reorder), consistent with how
+  channel planes already exclude them; PNM is unaffected (never bottom-up,
+  never padded).
 
 ## What's NOT done yet (planned)
-
-From the original incremental plan (`~/.claude/plans/quirky-hugging-scroll.md` if
-still present on this machine — otherwise this section is the source of truth now):
 
 - **M3 — sample-format dropdown.** Replace the hardcoded 8-bit-unsigned-PCM
   assumption in `SampleFormat.h` with a dropdown offering µ-law, A-law, 8-bit,
@@ -474,3 +736,19 @@ still present on this machine — otherwise this section is the source of truth 
   rendered content, so it didn't solve the problem it was meant to solve.
   There is no code for this in the tree; if revisiting, expect the same
   native-hosting root cause to block it again.
+- **Converting a non-24bpp BMP discards its original palette/bit-depth
+  permanently** — there's no "export back to 4bpp indexed" path, by design
+  (export was already PNG-only for every format before this, so this isn't a new
+  regression, just worth knowing: the databending happens on the *expanded*
+  24-bit buffer, not the file's literal original bytes).
+- **16bpp BMP is not supported at all** — no format-detection path exists for it
+  (1/4/8/32bpp are converted to 24-bit at load; 24bpp loads natively). Would need
+  the same "expand to 24-bit at load" treatment; not implemented because it
+  hasn't come up yet.
+- **BMP conversion only supports the classic 40-byte `BITMAPINFOHEADER`** for
+  locating a palette or `BI_BITFIELDS` masks — a file using the larger
+  `BITMAPV4HEADER`/`V5HEADER` variants (108/124 bytes, common from modern
+  screenshot tools for `BI_BITFIELDS`) is rejected with a clear error rather than
+  silently misreading unrelated header bytes as a palette/masks. This mirrors a
+  limitation that already existed everywhere else in this codebase (header
+  parsing has only ever assumed the 40-byte header), not a new one.

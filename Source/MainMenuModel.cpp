@@ -14,6 +14,7 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
     if (topLevelMenuIndex == 0)
     {
         menu.addItem(loadImageMenuItem, "Load Image...", ! panelOpen);
+        menu.addItem(editHeaderMenuItem, "Edit Header...", callbacks.canEditHeader() && ! panelOpen);
         menu.addItem(exportImageMenuItem, "Export Image...", callbacks.hasWorkingImage());
         menu.addItem(resetMenuItem, "Reset to Original", callbacks.hasOriginalImage() && ! panelOpen);
         menu.addSeparator();
@@ -35,6 +36,7 @@ void MainMenuModel::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
         case exportImageMenuItem:    callbacks.onExportImage(); break;
         case resetMenuItem:          callbacks.onReset(); break;
         case rescanPluginsMenuItem:  callbacks.onRescan(); break;
+        case editHeaderMenuItem:     callbacks.onEditHeader(); break;
         default: break;
     }
 }

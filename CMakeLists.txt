@@ -16,6 +16,7 @@ juce_add_gui_app(PixelBender
 target_sources(PixelBender PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
+    Source/MainComponentHeaderEditor.cpp
     Source/MainComponentImageIO.cpp
     Source/MainComponentPluginEditor.cpp
     Source/MainMenuModel.cpp

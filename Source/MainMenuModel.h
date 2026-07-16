@@ -21,6 +21,12 @@ public:
         std::function<void()> onReset;
         std::function<void()> onRescan;
         std::function<void(juce::PopupMenu&)> populateEditMenu;
+
+        // Appended at the end, not inserted -- Callbacks is initialised
+        // positionally at MainComponent.h's menuModel member, so inserting a
+        // field in the middle would silently scramble every later one.
+        std::function<bool()> canEditHeader;
+        std::function<void()> onEditHeader;
     };
 
     explicit MainMenuModel(Callbacks callbacksIn) : callbacks(std::move(callbacksIn)) {}
@@ -35,7 +41,8 @@ private:
         loadImageMenuItem = 1,
         exportImageMenuItem,
         resetMenuItem,
-        rescanPluginsMenuItem
+        rescanPluginsMenuItem,
+        editHeaderMenuItem
     };
 
     Callbacks callbacks;
