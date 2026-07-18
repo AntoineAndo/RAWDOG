@@ -152,9 +152,6 @@ void MainComponent::refreshLivePreview()
     request.blockSize = blockSize;
     request.epoch = livePreviewEpoch;
 
-    // TEMPORARY diagnostic (see the matching note in PluginParameterWatcher.h).
-    DBG("[refreshLivePreview] submit (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
-
     livePreviewWorker.submit(std::move(request));
 }
 
@@ -201,9 +198,6 @@ void MainComponent::applyLivePreviewResult(LivePreviewWorker::Result result)
         else
             waveformView.setBuffer(std::move(result.waveformSamples), false, std::move(result.waveformPeaks));
     }
-
-    // TEMPORARY diagnostic (see the matching note in PluginParameterWatcher.h).
-    DBG("[applyLivePreviewResult] delivered (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
 }
 
 void MainComponent::endLivePreviewSession(bool commitToWorkingImage)

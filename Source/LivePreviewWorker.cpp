@@ -265,9 +265,6 @@ void LivePreviewWorker::run()
             continue; // loop back around to re-check pendingRequest/threadShouldExit()
         }
 
-        // TEMPORARY diagnostic (see the matching note in PluginParameterWatcher.h).
-        DBG("[LivePreviewWorker] pass start (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
-
         Result result;
         result.processedBytes = processRequest(*request);
         result.channel = request->channel;
@@ -275,8 +272,6 @@ void LivePreviewWorker::run()
         result.epoch = request->epoch;
 
         renderResult(*request, result);
-
-        DBG("[LivePreviewWorker] pass end (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
 
         {
             const juce::ScopedLock sl(mutex);

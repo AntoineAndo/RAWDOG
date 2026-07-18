@@ -71,27 +71,6 @@ private:
     {
         const int parameterIndex = lastChangedParameterIndex.exchange(-1);
 
-        // TEMPORARY diagnostic (see PROJECT.md verification convention) --
-        // logs every coalesced notification turn with the parameter's CURRENT
-        // normalized value, to determine why the live-preview worker stays
-        // busy ~1s past the visibly-final result: identical trailing values
-        // (redundant notifications -> dedup at submit time is the fix) vs
-        // genuinely drifting values (plugin smoothing/quantization -> dedup
-        // would be useless). Remove once the overstay fix is confirmed.
-        if (watched != nullptr)
-        {
-            if (parameterIndex >= 0)
-            {
-                if (auto* param = watched->getParameters()[parameterIndex])
-                    DBG("[watcher] param " << parameterIndex << " value=" << param->getValue()
-                        << " (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
-            }
-            else
-            {
-                DBG("[watcher] non-parameter state change (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
-            }
-        }
-
         if (watched != nullptr && parameterIndex >= 0 && onParameterValueChanged != nullptr)
             if (auto* param = watched->getParameters()[parameterIndex]) // juce::Array::operator[] bounds-checks, returns nullptr if stale/out of range
                 onParameterValueChanged(param->getName(128), param->getCurrentValueAsText());

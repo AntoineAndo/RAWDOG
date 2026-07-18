@@ -837,6 +837,64 @@ purely as a structural refactor with no behavior change:
         at ~30Hz, showing a small rotating arc while a pass is in flight or
         queued and hiding itself (with a few-tick linger to avoid flicker
         between back-to-back passes) when idle.
+      - **"Spinner overstays after a tweak" — investigated, measured, and
+        deliberately left as-is.** The user reported the spinner staying ~3x
+        longer than the visible preview change after a knob gesture. Measured
+        (temporary per-notification/submit/pass/delivery logging, removed
+        after): the plugin fires dozens of parameter notifications per gesture
+        with *genuinely drifting values* — no identical-value trailing
+        re-sends, no non-parameter `audioProcessorChanged` events — so a
+        submit-time dedup fingerprint (designed and reviewed, never shipped)
+        would have skipped nothing. The trailing spinner time is the honest
+        queue tail of the one-slot mailbox: on release, the in-flight pass
+        (computing an already-stale value) finishes, then exactly one more
+        pass runs for the true released value. The preview *looks* settled a
+        pass earlier because adjacent values render near-identically, but the
+        spinner stopping is precisely the "preview now shows your final
+        setting" signal. A tail-shortening optimization (abort the stale
+        in-flight pass between blocks once the gesture goes quiet — a
+        `shouldAbort` hook in `PluginHost::processWholeBuffer()` gated on
+        pending-request + ~50ms of notification silence, to avoid starving
+        preview updates mid-drag) was designed but dropped as unnecessary once
+        the user confirmed the behavior feels fine. If this ever comes back,
+        start from that design — and do NOT reach for dedup; the data already
+        refuted it.
+  - **Image loading is asynchronous** (`loadImageClicked()`,
+    `MainComponentImageIO.cpp`): the whole heavy path — RAW camera conversion
+    (`RawCameraConverter`, ImageIO decode + BMP write: seconds for camera
+    files), `RawImage::loadFromFile()`, the copy to `workingImage`, warming
+    the plain-render cache, the whole-buffer `bytesToBuffer()` and
+    `WaveformPeaks` build — runs on `MainComponent::imageLoaderPool` (a
+    1-thread `juce::ThreadPool`; one-shot serialized jobs, so no
+    LivePreviewWorker-style mailbox needed), inside `JUCE_AUTORELEASEPOOL`.
+    It previously ran synchronously in the FileChooser callback and cost a
+    measured ~1.9s message-thread stall on a ~78MB image, freezing the UI and
+    the spinner. The message-thread completion (via `MessageManager::callAsync`)
+    is a cheap install; `finishImageLoad()` is the shared success/failure tail.
+    Key invariants:
+    - `imageLoadInProgress` (message-thread-only bool) gates every
+      image-mutating entry point while a load is in flight: the File menu
+      (via `MainMenuModel`'s busy callback), undo/redo keyboard commands
+      (`getCommandInfo`), the plugin list (`updatePluginListEnablement()`'s
+      `listInteractive`), the split toggle, and `loadImageClicked()` itself
+      (also reachable via `imagePreview.onClickWithNoImage`). Loads already
+      can't start during a plugin/header session, so an install can never
+      land into one (asserted in the completion).
+    - Completion liveness needs **two** guards: `Component::SafePointer`
+      (covers use-after-full-destruction) *plus* `imageLoadAliveToken`
+      (a `shared_ptr`/`weak_ptr` pair reset first thing in `~MainComponent()`)
+      — SafePointer only nulls in `~Component`, which runs *after* members
+      are destroyed, so a queued completion could otherwise dispatch into
+      partially-destroyed members if a plugin destructor pumps the run loop
+      during teardown (the same hazard the destructor already defends
+      against for `previewBusySpinner`).
+    - The spinner's feed is `livePreviewWorker.isBusy() || imageLoadInProgress`,
+      so it covers loads too, and the status bar shows "Loading <name>…".
+    - **Bug fixed in passing**: loading a new image with split-channel mode on
+      used to leave the three channel lanes showing the *previous* image's
+      planes (the old synchronous path never refreshed them either). Split
+      mode is now forced off on every successful load — the same "new image
+      resets view state" semantic as the sample-mode reset next to it.
   - **Scoped image *render*, on top of the scoped DSP above.** Even with the
     plugin/float-conversion work scoped to the selection, `refreshLivePreview()`
     still called `toJuceImageFromBytes(livePreviewBytes)` — a full per-pixel
