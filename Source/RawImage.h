@@ -2,7 +2,7 @@
 
 #include <juce_graphics/juce_graphics.h>
 #include <cstdint>
-#include <vector>
+#include <optional>
 #include "SampleFormat.h"
 
 // Loads/saves BMP (24-bit uncompressed) and PNM (raw P5/P6) files. pixelBytes
@@ -139,35 +139,57 @@ public:
     // valid, widely-viewable image rather than a raw BMP/PNM reconstruction.
     bool writeToPngFile(const juce::File& file) const;
 
-    // Renders the current pixelBytes (post- or pre-processing) as a juce::Image for preview.
-    // highlightByteRange, if non-empty, tints the pixels whose position falls within it — used
-    // to show which part of the image the current (interleaved) waveform selection maps onto.
-    // The range is in *visual top-down, unpadded* byte order (see getVisualOrderedPixelBytes()),
-    // matching what the interleaved waveform's sample index now means — NOT necessarily
-    // pixelBytes' own raw file-storage (possibly bottom-up/padded) order.
-    juce::Image toJuceImage(juce::Range<int> highlightByteRange = {}) const
-    { return toJuceImageFromBytes(pixelBytes, highlightByteRange); }
+    // Renders the current pixelBytes (post- or pre-processing) as a plain juce::Image
+    // for preview — no selection highlight baked in (that's now drawn as a cheap line
+    // overlay by the viewing component itself; see computeHighlightOverlay() below).
+    // Backed by a lazy cache (cachedPlainImage/plainImageDirty, same idiom as
+    // channelPlanes/visualOrderedPixelBytes below) — repeated calls with pixelBytes
+    // unchanged since the last call are free.
+    juce::Image toJuceImage() const;
 
     // Same rendering as toJuceImage(), but reads bytesToRender instead of this->pixelBytes —
     // format metadata (width/height/rowStride/channels/bottomUp/format) still comes from this.
     // Lets a caller render an uncommitted candidate buffer (e.g. a live plugin preview) for
-    // display without ever mutating pixelBytes itself. bytesToRender itself is still expected
-    // in pixelBytes' own real (possibly bottom-up/padded) row layout — only highlightByteRange
-    // is in visual-order coordinates; see toJuceImage() above.
-    juce::Image toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender,
-                                      juce::Range<int> highlightByteRange = {}) const;
+    // display without ever mutating pixelBytes itself.
+    juce::Image toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender) const;
 
-    // Distinct overload (not an optional param on the one above) so every
-    // existing interleaved-mode call site is untouched: highlights a
-    // plane-sample range (in getChannelPlane()'s coordinate space, not a byte
-    // range in the interleaved buffer) on one channel's lane, outlined in that
-    // channel's own colour instead of the fixed yellow above.
-    juce::Image toJuceImage(Channel highlightChannel, juce::Range<int> highlightPlaneSampleRange) const
-    { return toJuceImageFromBytes(pixelBytes, highlightChannel, highlightPlaneSampleRange); }
+    // Like toJuceImageFromBytes(), but only rows [firstRow, lastRow] (inclusive,
+    // in the same visual/screen row space as HighlightOverlay's topRow/bottomRow)
+    // are actually repainted from bytesToRender — every other row is a cheap
+    // duplicated-buffer copy of the cached plain render (getCachedPlainImage()),
+    // not a per-pixel re-render. bytesToRender must be byte-identical to pixelBytes
+    // everywhere OUTSIDE that row range — true for a selection-scoped live preview,
+    // see LivePreviewWorker's Apply-scoping (processRequest(), in LivePreviewWorker.cpp).
+    // For a live-preview session with no active selection (whole-buffer apply), the
+    // caller should use toJuceImageFromBytes() instead — there's no "unchanged
+    // outside a sub-range" guarantee to exploit in that case.
+    juce::Image toJuceImageFromBytesScoped(const juce::MemoryBlock& bytesToRender, int firstRow, int lastRow) const;
 
-    juce::Image toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender,
-                                      Channel highlightChannel,
-                                      juce::Range<int> highlightPlaneSampleRange) const;
+    // Geometry for drawing the selection highlight as a two-line overlay (top edge,
+    // bottom edge of the selection) rather than baking coloured pixels into the
+    // rendered image — the actual image content never needs to change just because
+    // the selection moved. Pure O(1) arithmetic: topRow/bottomRow are computed
+    // directly (start/rowBytes, (end-1)/rowBytes — literally which row a given
+    // percentage through the buffer falls on). The column span always spans the
+    // full image width, even for a partial boundary row where only part of that
+    // row is actually selected — a deliberate simplification, the lines read as
+    // "vertical extent of the selection" rather than precisely which columns of
+    // the boundary row are selected.
+    struct HighlightOverlay
+    {
+        int topRow = 0, topStartColumn = 0, topEndColumn = 0;
+        int bottomRow = 0, bottomStartColumn = 0, bottomEndColumn = 0;
+    };
+
+    // highlightByteRange is in *visual top-down, unpadded* byte order (see
+    // getVisualOrderedPixelBytes()), matching what the interleaved waveform's
+    // sample index means. Returns nullopt for an empty range (no highlight).
+    std::optional<HighlightOverlay> computeHighlightOverlay(juce::Range<int> highlightByteRange) const;
+
+    // Same, but highlightPlaneSampleRange is in getChannelPlane()'s coordinate
+    // space (a plane-sample index, one byte per pixel) instead of a byte range
+    // in the interleaved buffer — for a channel-scoped waveform selection.
+    std::optional<HighlightOverlay> computeChannelHighlightOverlay(juce::Range<int> highlightPlaneSampleRange) const;
 
     enum class Format { bmp, pnmBinary, pnmGray };
 
@@ -261,12 +283,41 @@ private:
     void remapPixelRowOrder(uint8_t* rawBytes, size_t rawSize,
                              uint8_t* canonicalBytes, bool toCanonical) const;
 
-    // The shared per-pixel border-drawing loop behind both toJuceImageFromBytes
-    // overloads: rowSelection[y] is the selected-column range for screen row y
-    // (empty vector == no highlight at all), in whichever coordinate space the
-    // caller already reduced its highlight range to (byte-range-in-interleaved
-    // for the plain overload, plane-sample-range for the channel overload).
-    juce::Image renderWithRowSelection(const juce::MemoryBlock& bytesToRender,
-                                        const std::vector<juce::Range<int>>& rowSelection,
-                                        juce::Colour borderColour) const;
+    // Plain-render cache backing toJuceImage() — same lazy dirty-flag idiom as
+    // channelPlanes/visualOrderedPixelBytes above, invalidated at exactly the
+    // same pixelBytes-mutation sites. toJuceImageFromBytesScoped() copies this
+    // (juce::Image::duplicateIfShared() — a real memcpy, NOT free, but far
+    // cheaper than the per-pixel colour-conversion loop it replaces for
+    // whichever rows didn't change) and only re-renders the rows that did.
+    mutable juce::Image cachedPlainImage;
+    mutable bool plainImageDirty = true;
+
+    void ensurePlainImageUpToDate() const;
+
+    // Shared per-pixel colour-extraction logic behind writePixelRows() below
+    // (BMP's BGR vs PNM's RGB byte order, or grayscale) — bounds-checked,
+    // defaults to black if byteOffset falls outside available.
+    void readRawRgbAt(const uint8_t* px, size_t available, size_t byteOffset,
+                       juce::uint8& r, juce::uint8& g, juce::uint8& b) const;
+
+    // Fast path behind toJuceImageFromBytes()/toJuceImageFromBytesScoped()'s
+    // render loops: writes raw pixel bytes directly via the bitmap's actual
+    // pixel struct, bypassing BitmapData::setPixelColour()'s per-pixel
+    // juce::Colour construction, always-false premultiply-alpha branch (this
+    // image data is always fully opaque), and per-pixel pixelFormat switch —
+    // measured via a throwaway timing harness at ~16.5ns/pixel through
+    // setPixelColour(), enough on its own to make a live-preview redraw feel
+    // laggy. Mirrors the pattern JUCE's own internal fast paths use (see
+    // BitmapDataDetail::PixelIterator/ImageConvolutionKernel in JUCE's
+    // source): the caller picks PixelType (juce::PixelRGB or
+    // juce::PixelARGB) ONCE from bitmap.pixelFormat before the loop starts —
+    // a per-pixel format branch is exactly what prevents the compiler from
+    // vectorizing this loop, per JUCE's own comment on why it does the same
+    // hoisting internally. On macOS specifically, requesting Image::RGB at
+    // construction is silently upgraded to Image::ARGB by CoreGraphicsImage —
+    // so the caller must always branch on the bitmap's actual runtime
+    // pixelFormat, never assume it matches what toJuceImage*() requested.
+    template <typename PixelType>
+    void writePixelRows(const juce::Image::BitmapData& bitmap, const uint8_t* px, size_t available,
+                        int startY, int endY) const;
 };

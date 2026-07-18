@@ -76,7 +76,9 @@ void MainComponent::refreshHeaderLivePreview(const RawImage::BmpEditableHeaderFi
 
     // The image preview must re-render on every field edit -- all 5 fields
     // affect how pixelBytes is interpreted even when its content is untouched.
-    imagePreview.setImage(headerEditScratch->toJuceImage(waveformView.getSelectionSampleRange()), false);
+    imagePreview.setImage(headerEditScratch->toJuceImage(), false);
+    // No channel ever applies here -- split mode is force-disabled during header editing.
+    updateHighlightOverlay(*headerEditScratch, { std::nullopt, waveformView.getSelectionSampleRange() });
 }
 
 void MainComponent::applyHeaderEditClicked()

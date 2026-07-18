@@ -2,7 +2,10 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <optional>
+#include <vector>
 #include "SampleFormat.h"
+#include "WaveformPeaks.h"
 
 // Renders a mono buffer as a min/max waveform and lets the user drag out a
 // time-range selection. The selection is expressed in sample indices, which
@@ -21,7 +24,16 @@ public:
     // resetView: true when loading a genuinely new image (resets zoom/scroll/selection);
     // false when refreshing after an in-place edit like Apply (same sample count, so the
     // current zoom/scroll/selection stay put — the user is likely inspecting that exact spot).
-    void setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView = true);
+    //
+    // precomputedPeaks: bucket peaks already computed off-thread for the new
+    // buffer (see WaveformPeaks::Partial and LivePreviewWorker::Result) — pass
+    // nullopt to have the full peak cache rebuilt here instead (a one-off
+    // O(numSamples) SIMD pass; fine for cold paths like image load, which
+    // already pay a scalar bytesToBuffer over the same data, but NOT for the
+    // recurring live-preview delivery path — see PROJECT.md's live-preview
+    // performance note for the measured numbers behind that rule).
+    void setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView = true,
+                   std::optional<WaveformPeaks::Partial> precomputedPeaks = std::nullopt);
 
     // Overwrites just a sub-range of the existing buffer's samples in place —
     // for when only a scoped sub-range of the underlying data actually changed
@@ -30,7 +42,9 @@ public:
     // that changed. Sample count is unchanged, so unlike setBuffer() there's
     // nothing to re-clamp view/selection against; still fires onViewChanged and
     // repaints, matching setBuffer(..., resetView=false)'s effect on those.
-    void updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples);
+    // precomputedPeaks: same contract as setBuffer()'s, scoped to the range.
+    void updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples,
+                           std::optional<WaveformPeaks::Partial> precomputedPeaks = std::nullopt);
 
     void clearSelection();
 
@@ -41,13 +55,13 @@ public:
 
     // Purely a display multiplier on amplitude — the underlying data is unaffected.
     // Values are clipped to the component's height once scaled, like a vertical zoom.
-    void setVerticalZoom(float newZoom) { verticalZoom = newZoom; repaint(); }
+    void setVerticalZoom(float newZoom) { verticalZoom = newZoom; invalidateCachedTrace(); repaint(); }
 
     // Which byte<->float mapping the buffer currently passed to setBuffer()/
     // updateSampleRange() was converted with — purely a display concern here
     // (paint() draws bipolar samples centred, unipolar samples bottom-anchored
     // using the full lane height), the actual conversion happens in SampleFormat.
-    void setSampleMode(SampleFormat::Mode newMode) { sampleMode = newMode; repaint(); }
+    void setSampleMode(SampleFormat::Mode newMode) { sampleMode = newMode; invalidateCachedTrace(); repaint(); }
 
     // zoom == 1 shows the whole buffer; higher values narrow the visible window.
     void setHorizontalZoom(float newZoom);
@@ -84,7 +98,30 @@ private:
     int xToSample(int x) const;
     int sampleToX(int sample) const;
 
+    // Pre-rendered, viewport-sized trace cache. paint()'s per-column min/max
+    // scan (viewLengthSamples samples total, worst case the whole buffer)
+    // used to rerun on every repaint -- including the ones mouseDrag() fires
+    // on every raw mouse-move event during a plain selection drag, since that
+    // never went through any debounce. The trace only actually depends on
+    // waveformData/viewStartSample/viewLengthSamples/verticalZoom/sampleMode,
+    // never the selection, so it's cached here and only regenerated when one
+    // of those actually changes -- see invalidateCachedTrace() call sites.
+    void ensureCachedTraceUpToDate();
+    void invalidateCachedTrace() { cachedTraceValid = false; }
+    juce::Image cachedTrace;
+    bool cachedTraceValid = false;
+
     juce::AudioBuffer<float> waveformData;
+
+    // Exact per-bucket min/max over waveformData (see WaveformPeaks.h) — what
+    // lets ensureCachedTraceUpToDate()'s per-column scan aggregate buckets
+    // instead of rescanning O(viewLengthSamples) raw samples on every rebuild.
+    // Depends ONLY on waveformData: kept in sync by setBuffer()/
+    // updateSampleRange() and deliberately NOT touched by the display-only
+    // setters (setVerticalZoom/setSampleMode/setHorizontalZoom/setViewStart),
+    // which is precisely what makes zoom/pan/mode trace rebuilds cheap too.
+    std::vector<float> peakMins, peakMaxs;
+
     float verticalZoom = 1.0f;
     SampleFormat::Mode sampleMode = SampleFormat::Mode::bipolar;
 

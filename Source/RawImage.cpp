@@ -608,6 +608,7 @@ RawImage::HeaderEditResult RawImage::applyBmpHeaderFields(const BmpEditableHeade
     deriveBmpGeometryFromHeaderBytes();
     planesDirty = true;
     visualOrderDirty = true;
+    plainImageDirty = true;
 
     return result;
 }
@@ -618,6 +619,7 @@ void RawImage::restoreSnapshot(juce::MemoryBlock newHeaderBytes, juce::MemoryBlo
     pixelBytes = std::move(newPixelBytes);
     planesDirty = true;
     visualOrderDirty = true;
+    plainImageDirty = true;
 
     if (format == Format::bmp)
         deriveBmpGeometryFromHeaderBytes();
@@ -628,6 +630,7 @@ void RawImage::setPixelBytes(juce::MemoryBlock newPixelBytes)
     pixelBytes = std::move(newPixelBytes);
     planesDirty = true;
     visualOrderDirty = true;
+    plainImageDirty = true;
 }
 
 int RawImage::channelByteOffset(Format format, Channel channel)
@@ -740,6 +743,7 @@ void RawImage::applyChannelBytes(Channel channel, const juce::MemoryBlock& newPl
 
     channelPlanes[(int) channel] = newPlaneBytes; // direct cache update -- the other two are untouched
     visualOrderDirty = true; // pixelBytes changed, so the whole-buffer visual-order cache is stale
+    plainImageDirty = true;
 }
 
 juce::MemoryBlock RawImage::previewWithChannelBytes(Channel channel, const juce::MemoryBlock& newPlaneBytes) const
@@ -818,6 +822,7 @@ void RawImage::applyVisualOrderedBytes(const juce::MemoryBlock& newVisualOrderBy
     // Recomputing from the just-written pixelBytes guarantees that.
     visualOrderDirty = true;
     planesDirty = true; // pixelBytes changed, so the per-channel plane cache is stale
+    plainImageDirty = true;
 }
 
 juce::MemoryBlock RawImage::previewWithVisualOrderedBytes(const juce::MemoryBlock& newVisualOrderBytes) const
@@ -843,155 +848,176 @@ bool RawImage::writeToPngFile(const juce::File& file) const
     return pngFormat.writeImageToStream(toJuceImage(), *stream);
 }
 
-juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender, juce::Range<int> highlightByteRange) const
+void RawImage::readRawRgbAt(const uint8_t* px, size_t available, size_t byteOffset,
+                             juce::uint8& r, juce::uint8& g, juce::uint8& b) const
 {
-    // Precompute each screen row's selected column range once (one
-    // Range::getIntersectionWith() per row) rather than recomputing byte
-    // offsets and re-intersecting for every pixel in a thickness x thickness
-    // neighbourhood — turns an O(width*height*outlineThickness^2) scan into
-    // O(width*height) with a cheap O(outlineThickness) per-pixel border
-    // check in renderWithRowSelection(), which matters once a selection
-    // covers a large image. An empty vector means "no highlight at all".
-    //
-    // highlightByteRange is in visual top-down, unpadded byte order (see
-    // getVisualOrderedPixelBytes()), matching what the interleaved waveform's
-    // sample index means — so screen row y's range is simply y*width*channels,
-    // no sourceRow/rowStride/bottomUp adjustment needed here (that's still
-    // handled separately, in renderWithRowSelection()'s own colour-reading
-    // loop, which does need pixelBytes' real row layout).
-    std::vector<juce::Range<int>> rowSelection;
+    r = g = b = 0;
 
-    if (! highlightByteRange.isEmpty())
+    if (byteOffset + (size_t) channels <= available)
     {
-        rowSelection.resize((size_t) height);
-        const int rowBytes = width * channels;
-
-        for (int y = 0; y < height; ++y)
+        if (channels == 3)
         {
-            const auto rowByteRange = juce::Range<int>(y * rowBytes, y * rowBytes + rowBytes);
-            const auto intersection = highlightByteRange.getIntersectionWith(rowByteRange);
-
-            if (! intersection.isEmpty())
-                rowSelection[(size_t) y] = { (intersection.getStart() - y * rowBytes) / channels,
-                                              (intersection.getEnd() - y * rowBytes + channels - 1) / channels };
+            if (format == Format::bmp)
+            {
+                // BMP stores pixels as BGR.
+                b = px[byteOffset + 0];
+                g = px[byteOffset + 1];
+                r = px[byteOffset + 2];
+            }
+            else
+            {
+                r = px[byteOffset + 0];
+                g = px[byteOffset + 1];
+                b = px[byteOffset + 2];
+            }
+        }
+        else
+        {
+            r = g = b = px[byteOffset];
         }
     }
-
-    return renderWithRowSelection(bytesToRender, rowSelection, juce::Colours::yellow);
 }
 
-juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender, Channel highlightChannel,
-                                            juce::Range<int> highlightPlaneSampleRange) const
+template <typename PixelType>
+void RawImage::writePixelRows(const juce::Image::BitmapData& bitmap, const uint8_t* px, size_t available,
+                               int startY, int endY) const
 {
-    // Simpler than the interleaved-byte-range case above: a channel plane is
-    // already stored in visual top-down row-major order (see
-    // getChannelPlane()), so a row's selected span is a direct arithmetic
-    // slice of the plane-sample range — no rowStride/bottomUp/channels
-    // adjustment needed.
-    std::vector<juce::Range<int>> rowSelection;
-
-    if (! highlightPlaneSampleRange.isEmpty())
+    for (int y = startY; y <= endY; ++y)
     {
-        rowSelection.resize((size_t) height);
+        const int sourceRow = bottomUp ? (height - 1 - y) : y;
+        const size_t rowOffset = (size_t) sourceRow * (size_t) rowStride;
+        auto* dest = reinterpret_cast<PixelType*>(bitmap.getPixelPointer(0, y));
 
-        for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
         {
-            const auto rowRange = juce::Range<int>(y * width, y * width + width);
-            const auto intersection = highlightPlaneSampleRange.getIntersectionWith(rowRange);
-
-            if (! intersection.isEmpty())
-                rowSelection[(size_t) y] = { intersection.getStart() - y * width, intersection.getEnd() - y * width };
+            const size_t byteOffset = rowOffset + (size_t) x * (size_t) channels;
+            juce::uint8 r, g, b;
+            readRawRgbAt(px, available, byteOffset, r, g, b);
+            dest[x].setARGB((juce::uint8) 0xff, r, g, b); // this image data is always fully opaque
         }
     }
-
-    const juce::Colour channelColours[3] = { juce::Colours::red, juce::Colours::green, juce::Colours::blue };
-    return renderWithRowSelection(bytesToRender, rowSelection, channelColours[(int) highlightChannel]);
 }
 
-juce::Image RawImage::renderWithRowSelection(const juce::MemoryBlock& bytesToRender,
-                                              const std::vector<juce::Range<int>>& rowSelection,
-                                              juce::Colour borderColour) const
+// Explicit instantiation: these are the only two pixel layouts toJuceImage*()
+// ever hands to writePixelRows() (selected once from bitmap.pixelFormat by
+// the callers below) -- see writePixelRows()'s declaration in RawImage.h for
+// why the branch must happen there and not per-pixel.
+template void RawImage::writePixelRows<juce::PixelRGB>(const juce::Image::BitmapData&, const uint8_t*, size_t, int, int) const;
+template void RawImage::writePixelRows<juce::PixelARGB>(const juce::Image::BitmapData&, const uint8_t*, size_t, int, int) const;
+
+juce::Image RawImage::toJuceImage() const
+{
+    ensurePlainImageUpToDate();
+    return cachedPlainImage; // cheap COW handle copy -- callers here only ever read it
+}
+
+void RawImage::ensurePlainImageUpToDate() const
+{
+    if (! plainImageDirty)
+        return;
+
+    cachedPlainImage = toJuceImageFromBytes(pixelBytes);
+    plainImageDirty = false;
+}
+
+juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender) const
 {
     juce::Image image(juce::Image::RGB, width, height, true);
     juce::Image::BitmapData bitmap(image, juce::Image::BitmapData::writeOnly);
 
     const auto* px = static_cast<const uint8_t*>(bytesToRender.getData());
     const size_t available = bytesToRender.getSize();
-    const bool hasSelection = ! rowSelection.empty();
 
-    // Outline thickness in pixels: a selected pixel is drawn as part of the
-    // border if any pixel within this distance is unselected. Interior
-    // pixels are left completely untinted, so the plugin's actual processed
-    // colours stay visible — only a border around the selection is drawn,
-    // rather than a full-area tint that used to obscure the result.
-    constexpr int outlineThickness = 2;
-
-    for (int y = 0; y < height; ++y)
+    // bitmap.pixelFormat is a runtime property of whichever ImageType actually
+    // backed this image, not necessarily Image::RGB as requested above -- on
+    // macOS specifically, CoreGraphicsImage silently upgrades RGB to ARGB (see
+    // writePixelRows()'s doc comment in RawImage.h). Branching once here,
+    // outside the pixel loop, is what lets writePixelRows() stay branch-free.
+    switch (bitmap.pixelFormat)
     {
-        const int sourceRow = bottomUp ? (height - 1 - y) : y;
-        const size_t rowOffset = (size_t) sourceRow * (size_t) rowStride;
+        case juce::Image::ARGB:  writePixelRows<juce::PixelARGB>(bitmap, px, available, 0, height - 1); break;
+        case juce::Image::RGB:   writePixelRows<juce::PixelRGB>(bitmap, px, available, 0, height - 1); break;
 
-        for (int x = 0; x < width; ++x)
-        {
-            const size_t byteOffset = rowOffset + (size_t) x * (size_t) channels;
-            juce::uint8 r = 0, g = 0, b = 0;
-
-            if (byteOffset + (size_t) channels <= available)
-            {
-                if (channels == 3)
-                {
-                    if (format == Format::bmp)
-                    {
-                        // BMP stores pixels as BGR.
-                        b = px[byteOffset + 0];
-                        g = px[byteOffset + 1];
-                        r = px[byteOffset + 2];
-                    }
-                    else
-                    {
-                        r = px[byteOffset + 0];
-                        g = px[byteOffset + 1];
-                        b = px[byteOffset + 2];
-                    }
-                }
-                else
-                {
-                    r = g = b = px[byteOffset];
-                }
-            }
-
-            auto colour = juce::Colour(r, g, b);
-
-            if (hasSelection && rowSelection[(size_t) y].contains(x))
-            {
-                const auto& thisRow = rowSelection[(size_t) y];
-
-                // Near the left/right edge of this row's selected span (O(1) —
-                // just a distance check against the span's own bounds).
-                bool isBorder = (x - thisRow.getStart() < outlineThickness)
-                              || (thisRow.getEnd() - 1 - x < outlineThickness);
-
-                // Near the top/bottom edge: a neighbouring row within
-                // outlineThickness doesn't have this column selected. Only
-                // outlineThickness row lookups (not a full 2D neighbourhood),
-                // each an O(1) array index + Range::contains.
-                for (int dy = 1; dy <= outlineThickness && ! isBorder; ++dy)
-                {
-                    const int above = y - dy;
-                    const int below = y + dy;
-
-                    if ((above < 0 || ! rowSelection[(size_t) above].contains(x))
-                        || (below >= height || ! rowSelection[(size_t) below].contains(x)))
-                        isBorder = true;
-                }
-
-                if (isBorder)
-                    colour = borderColour;
-            }
-
-            bitmap.setPixelColour(x, y, colour);
-        }
+        case juce::Image::SingleChannel:
+        case juce::Image::UnknownFormat:
+        default:
+            jassertfalse; // toJuceImage*() always constructs an opaque RGB/ARGB colour image
+            break;
     }
 
     return image;
+}
+
+juce::Image RawImage::toJuceImageFromBytesScoped(const juce::MemoryBlock& bytesToRender, int firstRow, int lastRow) const
+{
+    ensurePlainImageUpToDate();
+
+    juce::Image result = cachedPlainImage;
+    result.duplicateIfShared(); // REQUIRED: makes `result` a genuinely independent
+                                 // pixel buffer before writing -- opening a writable
+                                 // BitmapData does NOT do this automatically, and
+                                 // without it this would silently corrupt the shared
+                                 // cachedPlainImage.
+
+    juce::Image::BitmapData bitmap(result, juce::Image::BitmapData::writeOnly);
+    const auto* px = static_cast<const uint8_t*>(bytesToRender.getData());
+    const size_t available = bytesToRender.getSize();
+
+    const int startY = juce::jlimit(0, height - 1, juce::jmin(firstRow, lastRow));
+    const int endY = juce::jlimit(0, height - 1, juce::jmax(firstRow, lastRow));
+
+    // See toJuceImageFromBytes() above for why this branches on the bitmap's
+    // actual runtime pixelFormat rather than assuming RGB.
+    switch (bitmap.pixelFormat)
+    {
+        case juce::Image::ARGB:  writePixelRows<juce::PixelARGB>(bitmap, px, available, startY, endY); break;
+        case juce::Image::RGB:   writePixelRows<juce::PixelRGB>(bitmap, px, available, startY, endY); break;
+
+        case juce::Image::SingleChannel:
+        case juce::Image::UnknownFormat:
+        default:
+            jassertfalse; // toJuceImage*() always constructs an opaque RGB/ARGB colour image
+            break;
+    }
+
+    return result;
+}
+
+std::optional<RawImage::HighlightOverlay> RawImage::computeHighlightOverlay(juce::Range<int> highlightByteRange) const
+{
+    if (highlightByteRange.isEmpty())
+        return std::nullopt;
+
+    const int rowBytes = width * channels;
+    const int topRow = juce::jlimit(0, height - 1, highlightByteRange.getStart() / rowBytes);
+    const int bottomRow = juce::jlimit(0, height - 1, (highlightByteRange.getEnd() - 1) / rowBytes);
+
+    HighlightOverlay overlay;
+    overlay.topRow = topRow;
+    overlay.bottomRow = bottomRow;
+    // Full image width rather than the exact intersected sub-range for a
+    // partial boundary row -- a deliberate simplification (the marker lines
+    // read as "here's the vertical extent of the selection" rather than
+    // precisely which columns of that one row are selected).
+    overlay.topStartColumn = overlay.bottomStartColumn = 0;
+    overlay.topEndColumn = overlay.bottomEndColumn = width;
+    return overlay;
+}
+
+std::optional<RawImage::HighlightOverlay> RawImage::computeChannelHighlightOverlay(juce::Range<int> highlightPlaneSampleRange) const
+{
+    if (highlightPlaneSampleRange.isEmpty())
+        return std::nullopt;
+
+    const int topRow = juce::jlimit(0, height - 1, highlightPlaneSampleRange.getStart() / width);
+    const int bottomRow = juce::jlimit(0, height - 1, (highlightPlaneSampleRange.getEnd() - 1) / width);
+
+    HighlightOverlay overlay;
+    overlay.topRow = topRow;
+    overlay.bottomRow = bottomRow;
+    // Full image width rather than the exact intersected sub-range -- see
+    // the identical note in computeHighlightOverlay() above.
+    overlay.topStartColumn = overlay.bottomStartColumn = 0;
+    overlay.topEndColumn = overlay.bottomEndColumn = width;
+    return overlay;
 }

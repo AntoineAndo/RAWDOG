@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <juce_audio_processors/juce_audio_processors.h>
 
 // Detects parameter/state changes on a currently-attached plugin instance so a
@@ -18,12 +19,98 @@ public:
 
     std::function<void()> onPluginParametersChanged;
 
+    // Fired (coalesced the same way as onPluginParametersChanged above) with
+    // the display name and current value-as-text of whichever parameter last
+    // changed — for surfacing "what just changed" in a status line. Only
+    // fired from an actual per-parameter change (audioProcessorParameterChanged
+    // below); the more general audioProcessorChanged() state-change
+    // notification (program change, etc.) has no single parameter to report,
+    // so it doesn't trigger this callback.
+    std::function<void(const juce::String& parameterName, const juce::String& valueText)> onParameterValueChanged;
+
     ~PluginParameterWatcher() override { detach(); }
 
+    // RAII guard for LivePreviewWorker's ramp-evaluation pass: parameter-automation
+    // ramps drive a plugin parameter via setValueNotifyingHost() from the worker
+    // thread (see LivePreviewWorker), which — unguarded — would look identical to a
+    // real user knob-drag and re-trigger a live-preview recompute of the same
+    // deterministic ramps, forever. Scoping the suppression to a thread_local flag
+    // (rather than fully detaching the listener, as an earlier version of this class
+    // did) means it only ever suppresses the ramp-writing thread's own writes —
+    // a real gesture arriving concurrently on the message thread (or any other
+    // thread) is never swallowed, since setValueNotifyingHost() invokes listeners
+    // synchronously on whichever thread calls it.
+    struct ScopedSelfWriteSuppression
+    {
+        ScopedSelfWriteSuppression() { ++suppressionDepth; }
+        ~ScopedSelfWriteSuppression() { --suppressionDepth; }
+    };
+
 private:
-    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override { triggerAsyncUpdate(); }
-    void audioProcessorChanged(juce::AudioProcessor*, const juce::AudioProcessorListener::ChangeDetails&) override { triggerAsyncUpdate(); }
-    void handleAsyncUpdate() override { if (onPluginParametersChanged) onPluginParametersChanged(); }
+    static bool isSuppressedOnThisThread() { return suppressionDepth > 0; }
+
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int parameterIndex, float) override
+    {
+        if (isSuppressedOnThisThread())
+            return;
+
+        lastChangedParameterIndex = parameterIndex;
+        triggerAsyncUpdate();
+    }
+
+    void audioProcessorChanged(juce::AudioProcessor*, const juce::AudioProcessorListener::ChangeDetails&) override
+    {
+        if (isSuppressedOnThisThread())
+            return;
+
+        lastChangedParameterIndex = -1;
+        triggerAsyncUpdate();
+    }
+
+    void handleAsyncUpdate() override
+    {
+        const int parameterIndex = lastChangedParameterIndex.exchange(-1);
+
+        // TEMPORARY diagnostic (see PROJECT.md verification convention) --
+        // logs every coalesced notification turn with the parameter's CURRENT
+        // normalized value, to determine why the live-preview worker stays
+        // busy ~1s past the visibly-final result: identical trailing values
+        // (redundant notifications -> dedup at submit time is the fix) vs
+        // genuinely drifting values (plugin smoothing/quantization -> dedup
+        // would be useless). Remove once the overstay fix is confirmed.
+        if (watched != nullptr)
+        {
+            if (parameterIndex >= 0)
+            {
+                if (auto* param = watched->getParameters()[parameterIndex])
+                    DBG("[watcher] param " << parameterIndex << " value=" << param->getValue()
+                        << " (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
+            }
+            else
+            {
+                DBG("[watcher] non-parameter state change (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
+            }
+        }
+
+        if (watched != nullptr && parameterIndex >= 0 && onParameterValueChanged != nullptr)
+            if (auto* param = watched->getParameters()[parameterIndex]) // juce::Array::operator[] bounds-checks, returns nullptr if stale/out of range
+                onParameterValueChanged(param->getName(128), param->getCurrentValueAsText());
+
+        if (onPluginParametersChanged != nullptr)
+            onPluginParametersChanged();
+    }
 
     juce::AudioProcessor* watched = nullptr;
+
+    // Written from audioProcessorParameterChanged(), which JUCE documents may
+    // be called off the message thread; read from handleAsyncUpdate(), always
+    // on the message thread. Atomic to make that cross-thread handoff safe.
+    std::atomic<int> lastChangedParameterIndex { -1 };
+
+    // Per-thread, not per-instance: only LivePreviewWorker's dedicated thread ever
+    // sets this, for the narrow duration of a ramp-evaluation pass, so it can never
+    // suppress a real gesture arriving on the message thread (or any other thread).
+    // inline (C++17) so this header-only class doesn't need a matching .cpp just
+    // for one static member's out-of-line definition.
+    inline static thread_local int suppressionDepth = 0;
 };

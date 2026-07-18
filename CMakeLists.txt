@@ -15,6 +15,7 @@ juce_add_gui_app(PixelBender
 
 target_sources(PixelBender PRIVATE
     Source/Main.cpp
+    Source/LivePreviewWorker.cpp
     Source/MainComponent.cpp
     Source/MainComponentHeaderEditor.cpp
     Source/MainComponentImageIO.cpp
@@ -23,6 +24,7 @@ target_sources(PixelBender PRIVATE
     Source/PluginListModel.cpp
     Source/PluginScanner.cpp
     Source/PluginHost.cpp
+    Source/RawCameraConverter.cpp
     Source/RawImage.cpp
     Source/WaveformView.cpp
     Source/ZoomableImageView.cpp
@@ -45,4 +47,5 @@ target_link_libraries(PixelBender PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
+    "-framework ImageIO"
 )

@@ -1,8 +1,29 @@
 #include "WaveformView.h"
 
-void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
+void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView,
+                             std::optional<WaveformPeaks::Partial> precomputedPeaks)
 {
     waveformData = std::move(newBuffer);
+    invalidateCachedTrace();
+
+    {
+        const int numSamples = waveformData.getNumSamples();
+        const float* samples = numSamples > 0 ? waveformData.getReadPointer(0) : nullptr;
+
+        if (precomputedPeaks.has_value())
+        {
+            // The supplied run covers every full bucket; applyPartial()
+            // recomputes whatever it doesn't cover (at most the buffer's
+            // partial tail bucket -- see computePartial()'s doc comment).
+            peakMins.assign((size_t) WaveformPeaks::numBucketsFor(numSamples), 0.0f);
+            peakMaxs.assign((size_t) WaveformPeaks::numBucketsFor(numSamples), 0.0f);
+            WaveformPeaks::applyPartial(peakMins, peakMaxs, *precomputedPeaks, samples, numSamples, 0, numSamples);
+        }
+        else
+        {
+            WaveformPeaks::buildPeaks(samples, numSamples, peakMins, peakMaxs);
+        }
+    }
 
     bool selectionChanged = false;
 
@@ -45,13 +66,30 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView)
     repaint();
 }
 
-void WaveformView::updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples)
+void WaveformView::updateSampleRange(int startSample, const juce::AudioBuffer<float>& newSamples,
+                                     std::optional<WaveformPeaks::Partial> precomputedPeaks)
 {
     const int length = newSamples.getNumSamples();
     if (length <= 0)
         return;
 
     waveformData.copyFrom(0, startSample, newSamples, 0, 0, length);
+
+    // Defensive: a stale-sized peak cache (shouldn't happen -- setBuffer()
+    // always resizes it) would make applyPartial() write out of bounds, so
+    // fall back to a full rebuild rather than trust it. Otherwise splice the
+    // precomputed run (or recompute every touched bucket from the just-spliced
+    // data, when none was supplied -- an empty Partial covers nothing, so
+    // applyPartial() degrades to exactly that).
+    if ((int) peakMins.size() != WaveformPeaks::numBucketsFor(waveformData.getNumSamples()))
+        WaveformPeaks::buildPeaks(waveformData.getReadPointer(0), waveformData.getNumSamples(), peakMins, peakMaxs);
+    else
+        WaveformPeaks::applyPartial(peakMins, peakMaxs,
+                                    precomputedPeaks.has_value() ? *precomputedPeaks : WaveformPeaks::Partial{},
+                                    waveformData.getReadPointer(0), waveformData.getNumSamples(),
+                                    startSample, startSample + length);
+
+    invalidateCachedTrace();
 
     if (onViewChanged != nullptr)
         onViewChanged();
@@ -101,6 +139,7 @@ void WaveformView::setHorizontalZoom(float newZoom)
     const int minVisible = juce::jmin(numSamples, 16);
     viewLengthSamples = juce::jlimit(minVisible, numSamples, (int) (numSamples / clampedZoom));
     viewStartSample = juce::jlimit(0, numSamples - viewLengthSamples, viewStartSample);
+    invalidateCachedTrace();
 
     if (onViewChanged != nullptr)
         onViewChanged();
@@ -112,6 +151,7 @@ void WaveformView::setViewStart(int newViewStartSample)
 {
     const int numSamples = waveformData.getNumSamples();
     viewStartSample = juce::jlimit(0, juce::jmax(0, numSamples - viewLengthSamples), newViewStartSample);
+    invalidateCachedTrace();
 
     if (onViewChanged != nullptr)
         onViewChanged();
@@ -145,10 +185,49 @@ juce::Range<int> WaveformView::getSelectionSampleRange() const
 
 void WaveformView::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colours::black);
+    ensureCachedTraceUpToDate();
+    g.drawImageAt(cachedTrace, 0, 0);
 
-    const int width = getWidth();
-    const int height = getHeight();
+    if (hasSelection)
+    {
+        const float height = (float) getHeight();
+        const float x1 = (float) sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
+        const float x2 = (float) sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
+        auto selectionRect = juce::Rectangle<float>(x1, 0.0f, x2 - x1, height);
+
+        g.setColour(juce::Colours::yellow.withAlpha(0.25f));
+        g.fillRect(selectionRect);
+        g.setColour(juce::Colours::yellow);
+        g.drawRect(selectionRect, 1.0f);
+
+        // Small grip marks at each edge so the resize handles are visually
+        // discoverable, not just an invisible hit zone found by hovering.
+        constexpr float gripWidth = 3.0f;
+        g.setColour(juce::Colours::white);
+        g.fillRect(juce::Rectangle<float>(x1 - gripWidth * 0.5f, 0.0f, gripWidth, height));
+        g.fillRect(juce::Rectangle<float>(x2 - gripWidth * 0.5f, 0.0f, gripWidth, height));
+    }
+}
+
+void WaveformView::ensureCachedTraceUpToDate()
+{
+    const int w = juce::jmax(1, getWidth());
+    const int h = juce::jmax(1, getHeight());
+
+    if (cachedTraceValid && cachedTrace.getWidth() == w && cachedTrace.getHeight() == h)
+        return;
+
+    // Only reallocate when the size actually changed -- reuse the same
+    // juce::Image object across same-size regenerations, same idiom as
+    // ZoomableImageView::ensureCachedRenderUpToDate().
+    if (cachedTrace.getWidth() != w || cachedTrace.getHeight() != h)
+        cachedTrace = juce::Image(juce::Image::RGB, w, h, false);
+
+    juce::Graphics cg(cachedTrace);
+    cg.fillAll(juce::Colours::black);
+
+    const int width = w;
+    const int height = h;
     const float midY = (float) height * 0.5f;
     const int numSamples = waveformData.getNumSamples();
 
@@ -166,7 +245,7 @@ void WaveformView::paint(juce::Graphics& g)
     {
         const auto* samples = waveformData.getReadPointer(0);
 
-        g.setColour(juce::Colours::limegreen);
+        cg.setColour(juce::Colours::limegreen);
 
         for (int x = 0; x < width; ++x)
         {
@@ -174,60 +253,32 @@ void WaveformView::paint(juce::Graphics& g)
             int endSample = viewStartSample + (int) ((juce::int64) (x + 1) * viewLengthSamples / width);
             endSample = juce::jmin(juce::jmax(endSample, startSample + 1), viewStartSample + viewLengthSamples);
 
-            // Seed from the first real sample in range, not from a hardcoded
-            // 0.0f -- seeding at 0 silently acts as an implicit floor/ceiling:
-            // if every sample in this column is on one side of zero (e.g. a
-            // long run of full-scale-negative bytes, as happens throughout a
-            // single colour channel's plane wherever that channel is simply
-            // absent), the opposite extreme incorrectly gets reported as 0
-            // instead of tracking the true (still one-sided) min/max, making
-            // the trace look like it only reaches the centre line instead of
-            // the real extreme.
-            float minV = 0.0f, maxV = 0.0f;
+            // Exact min/max of the column's clamped sample range, via the
+            // bucket peak cache instead of a raw O(samples-per-column) rescan
+            // (which, totalled across columns, was an O(viewLengthSamples)
+            // message-thread pass on every rebuild -- measured at ~406ms on a
+            // 77.9M-sample buffer; see PROJECT.md's live-preview performance
+            // note). columnMinMax() preserves this loop's previous semantics
+            // exactly, including the true one-sided min/max for columns whose
+            // samples never cross zero (e.g. a colour channel's plane wherever
+            // that channel is absent) and {0,0} for a column beyond the data.
+            const auto mm = WaveformPeaks::columnMinMax(samples, numSamples, startSample, endSample, peakMins, peakMaxs);
 
-            if (startSample < numSamples)
-            {
-                minV = maxV = samples[startSample];
-
-                for (int s = startSample + 1; s < endSample && s < numSamples; ++s)
-                {
-                    minV = juce::jmin(minV, samples[s]);
-                    maxV = juce::jmax(maxV, samples[s]);
-                }
-            }
-
-            minV = juce::jlimit(loClamp, hiClamp, minV * verticalZoom);
-            maxV = juce::jlimit(loClamp, hiClamp, maxV * verticalZoom);
+            const float minV = juce::jlimit(loClamp, hiClamp, mm.minV * verticalZoom);
+            const float maxV = juce::jlimit(loClamp, hiClamp, mm.maxV * verticalZoom);
 
             const float y1 = baseline - maxV * scale;
             const float y2 = juce::jmax(baseline - minV * scale, y1 + 1.0f);
-            g.drawLine((float) x, y1, (float) x, y2);
+            cg.drawLine((float) x, y1, (float) x, y2);
         }
     }
     else
     {
-        g.setColour(juce::Colours::grey);
-        g.drawText("Load an image to see its waveform", getLocalBounds(), juce::Justification::centred);
+        cg.setColour(juce::Colours::grey);
+        cg.drawText("Load an image to see its waveform", cachedTrace.getBounds(), juce::Justification::centred);
     }
 
-    if (hasSelection)
-    {
-        const float x1 = (float) sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
-        const float x2 = (float) sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
-        auto selectionRect = juce::Rectangle<float>(x1, 0.0f, x2 - x1, (float) height);
-
-        g.setColour(juce::Colours::yellow.withAlpha(0.25f));
-        g.fillRect(selectionRect);
-        g.setColour(juce::Colours::yellow);
-        g.drawRect(selectionRect, 1.0f);
-
-        // Small grip marks at each edge so the resize handles are visually
-        // discoverable, not just an invisible hit zone found by hovering.
-        constexpr float gripWidth = 3.0f;
-        g.setColour(juce::Colours::white);
-        g.fillRect(juce::Rectangle<float>(x1 - gripWidth * 0.5f, 0.0f, gripWidth, (float) height));
-        g.fillRect(juce::Rectangle<float>(x2 - gripWidth * 0.5f, 0.0f, gripWidth, (float) height));
-    }
+    cachedTraceValid = true;
 }
 
 void WaveformView::mouseDown(const juce::MouseEvent& e)

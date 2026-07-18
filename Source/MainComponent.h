@@ -3,10 +3,13 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <array>
 #include <optional>
+#include "BusySpinner.h"
 #include "FavouritePluginsStore.h"
 #include "HeaderEditorPanel.h"
 #include "LeftColumnPanel.h"
+#include "LivePreviewWorker.h"
 #include "MainMenuModel.h"
+#include "ParameterAutomation.h"
 #include "PluginEditorPanel.h"
 #include "PluginListModel.h"
 #include "PluginParameterWatcher.h"
@@ -37,7 +40,11 @@ private:
     enum CommandIDs
     {
         undoCommand = 1000,
-        redoCommand
+        redoCommand,
+        cancelEditorCommand // Escape — cancels whichever of pluginEditorPanel/
+                            // headerEditorPanel is currently open, not shown
+                            // in any menu (keyboard-only, mirroring each
+                            // panel's own Cancel button)
     };
 
     void refreshPluginList();
@@ -63,10 +70,25 @@ private:
     void syncScrollBarToView();
     void setStatus(const juce::String& text);
 
-    juce::MemoryBlock computeProcessedPixelBytes(juce::AudioPluginInstance& plugin,
-                                                  const juce::Range<int>& selection,
-                                                  std::optional<RawImage::Channel> channel = std::nullopt);
+    // Lazily builds (and caches for the rest of this live-preview session --
+    // see cachedWholeBufferSource/cachedChannelSource below) an immutable
+    // snapshot of the buffer LivePreviewWorker should process for the given
+    // scope. Safe to hand to another thread via shared_ptr because
+    // workingImage->pixelBytes is provably immutable for as long as the
+    // plugin panel stays open (Load Image/Reset/Undo/Redo are disabled then
+    // -- see updatePluginListEnablement()), and nothing mutates the returned
+    // snapshot after construction.
+    std::shared_ptr<const juce::MemoryBlock> getOrBuildLivePreviewSource(std::optional<RawImage::Channel> channel);
+
     void refreshLivePreview();
+
+    // The callback LivePreviewWorker::onResultReady is wired to -- the same
+    // image/waveform-update logic refreshLivePreview()'s tail always ran
+    // synchronously, now applied whenever a background pass completes.
+    // Discards a result whose epoch doesn't match livePreviewEpoch (the
+    // session it was computed for already ended -- Apply/Cancel/plugin swap).
+    void applyLivePreviewResult(LivePreviewWorker::Result result);
+
     void endLivePreviewSession(bool commitToWorkingImage);
 
     // Which selection is "the" current one for Apply/undo/highlight purposes:
@@ -80,6 +102,13 @@ private:
     };
 
     SelectionScope getCurrentSelectionScope() const;
+
+    // Refreshes just the image preview's selection highlight (two lines, no
+    // pixel data touched) against the given image/scope -- far cheaper than
+    // updatePreview()/refreshLivePreview(), which rebuild the whole image.
+    // Takes the image explicitly (rather than always workingImage) so it
+    // works equally for the header editor's separate headerEditScratch.
+    void updateHighlightOverlay(const RawImage& image, const SelectionScope& scope);
 
     // Restores a captured SelectionScope (from an undo/redo entry): clears
     // every lane's selection first, switches split mode on/off to match
@@ -114,7 +143,15 @@ private:
     void handleAsyncUpdate() override;
 
     static constexpr double sampleRate = 44100.0;
-    static constexpr int blockSize = 512;
+
+    // Bumped from 512 (see PROJECT.md's live-preview performance note):
+    // processWholeBuffer()'s cost is dominated by per-block overhead, not
+    // per-sample DSP, so a larger block cuts total block-boundary crossings
+    // ~8x for the same buffer. Tradeoff: ParameterAutomation ramps evaluate
+    // once per block, so this also coarsens ramp resolution ~8x -- still
+    // thousands of steps across a typical selection, imperceptible for pixel
+    // data.
+    static constexpr int blockSize = 4096;
 
     PluginScanner scanner;
 
@@ -132,12 +169,17 @@ private:
     juce::ListBox pluginListBox;
     juce::Label statusLabel;
 
+    // Sits just left of statusLabel in the status strip; shows itself while
+    // livePreviewWorker has a pass in flight (wired to isBusy() in the
+    // constructor) and hides itself when idle -- see BusySpinner.h.
+    BusySpinner previewBusySpinner;
+
     FavouritePluginsStore favouritePluginsStore;
     PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },
-        [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr; },
+        [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr || imageLoadInProgress; },
         [this] { return workingImage != nullptr; },
         [this] { return originalImage != nullptr; },
         [this] { loadImageClicked(); },
@@ -161,7 +203,7 @@ private:
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, waveformZoomSlider,
                                     waveformZoomLabel, horizontalZoomSlider, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
-                                    splitModeToggle, sampleModeLabel, sampleModeCombo };
+                                    splitModeToggle, sampleModeLabel, sampleModeCombo, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
     juce::StretchableLayoutResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
@@ -173,6 +215,15 @@ private:
     std::unique_ptr<RawImage> originalImage;
     std::unique_ptr<RawImage> workingImage;
     std::unique_ptr<juce::AudioPluginInstance> currentPlugin;
+
+    // Declared after currentPlugin as a matter of style (matching
+    // pluginParamWatcher's ordering rationale above), but the real safety
+    // guarantee is the explicit livePreviewWorker.stopThread() call in
+    // ~MainComponent(), *before* currentPlugin->releaseResources() -- not
+    // implicit destruction order alone. See LivePreviewWorker's own comments
+    // for why processing runs here instead of on the message thread.
+    LivePreviewWorker livePreviewWorker;
+
     std::unique_ptr<PluginEditorPanel> pluginEditorPanel;
 
     // While headerEditorPanel is open, headerEditScratch is a scratch copy of
@@ -183,22 +234,64 @@ private:
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
+    // Image loading runs on this single-thread pool, not the message thread --
+    // RAW camera conversion (ImageIO decode + BMP write) plus the whole-buffer
+    // waveform conversion took ~2s of measured message-thread stall on a
+    // ~78MB image, freezing the UI (and the busy spinner) for the duration.
+    // One-shot serialized jobs with no state between them, so a ThreadPool
+    // (not another LivePreviewWorker-style mailbox thread) is the right
+    // primitive. imageLoadInProgress is message-thread-only state: set when a
+    // load is dispatched, cleared in finishImageLoad(); while set, every
+    // image-mutating entry point (Load/Reset/Undo/Redo/Export/header edit/
+    // plugin-session open/split toggle) is disabled, so the install can never
+    // land into a live session or clobber a concurrent edit.
+    juce::ThreadPool imageLoaderPool { 1 };
+    bool imageLoadInProgress = false;
+
+    // Liveness token for the load-completion callback. Component::SafePointer
+    // alone is not enough at shutdown: it only nulls in ~Component, which runs
+    // AFTER members are destroyed -- so a completion already queued when
+    // ~MainComponent starts could still dispatch into partially-destroyed
+    // members if a plugin's destructor pumps the run loop (the same hazard
+    // ~MainComponent already defends against for previewBusySpinner). The
+    // destructor resets this token first; the completion holds a weak_ptr and
+    // bails if it can't lock.
+    std::shared_ptr<void> imageLoadAliveToken = std::make_shared<int>(0);
+
+    // Shared tail of the async image-load completion (success and failure
+    // paths both funnel here): clears imageLoadInProgress, re-enables
+    // everything the load disabled, and shows the outcome in the status bar.
+    void finishImageLoad(const juce::String& statusText);
+
     // Caches the last live-preview result while pluginEditorPanel is open; Apply
     // reuses it directly instead of recomputing, so the committed bytes are
-    // guaranteed identical to what was just previewed. livePreviewBytes is
-    // always the full interleaved buffer in pixelBytes' own real (possibly
-    // bottom-up/padded) layout — what's actually rendered for display, via
-    // previewWithChannelBytes() or previewWithVisualOrderedBytes() depending on
-    // scope. livePreviewChannel tracks which of the two "edited source" fields
-    // below is the current one: livePreviewChannelPlaneBytes (an edited
-    // channel plane, when scoped) or livePreviewVisualOrderBytes (the edited
-    // whole visual-order buffer, otherwise) — whichever applies is what
-    // endLivePreviewSession() splices back via applyChannelBytes() or
-    // applyVisualOrderedBytes() respectively, instead of a full setPixelBytes().
-    juce::MemoryBlock livePreviewBytes;
+    // guaranteed identical to what was just previewed. livePreviewChannel
+    // tracks which of the two "edited source" fields below is the current
+    // one: livePreviewChannelPlaneBytes (an edited channel plane, when
+    // scoped) or livePreviewVisualOrderBytes (the edited whole visual-order
+    // buffer, otherwise) — whichever applies is what endLivePreviewSession()
+    // splices back via applyChannelBytes() or applyVisualOrderedBytes()
+    // respectively, instead of a full setPixelBytes(). (The rendered juce::Image
+    // and waveform float buffer built from these bytes are no longer cached
+    // here at all -- LivePreviewWorker::Result carries them directly from the
+    // worker thread to applyLivePreviewResult(), which just hands them to
+    // imagePreview/waveformView without needing to keep its own copy.)
     std::optional<RawImage::Channel> livePreviewChannel;
     juce::MemoryBlock livePreviewChannelPlaneBytes;
     juce::MemoryBlock livePreviewVisualOrderBytes;
+
+    // Bumped by endLivePreviewSession() (both the commit and discard
+    // branches) -- echoed on every LivePreviewWorker::Request and checked
+    // against on every Result, so a background pass that outlives its
+    // session (Apply/Cancel/plugin swap already happened) is recognized as
+    // stale and dropped by applyLivePreviewResult() instead of misapplied.
+    uint64_t livePreviewEpoch = 0;
+
+    // Per-session cache backing getOrBuildLivePreviewSource() -- cleared in
+    // endLivePreviewSession() since workingImage->pixelBytes may change
+    // (Apply commits new bytes) once the session ends.
+    std::shared_ptr<const juce::MemoryBlock> cachedWholeBufferSource;
+    std::array<std::shared_ptr<const juce::MemoryBlock>, 3> cachedChannelSource;
 
     // Tracks which channel lane (if any) currently owns the live selection
     // while split mode is on — only one lane has an active selection at a

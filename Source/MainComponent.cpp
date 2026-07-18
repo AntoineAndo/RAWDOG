@@ -92,7 +92,15 @@ MainComponent::MainComponent()
         };
     }
 
+    livePreviewWorker.onResultReady = [this](LivePreviewWorker::Result result) { applyLivePreviewResult(std::move(result)); };
+    previewBusySpinner.isBusy = [this] { return livePreviewWorker.isBusy() || imageLoadInProgress; };
+
     pluginParamWatcher.onPluginParametersChanged = [this] { refreshLivePreview(); };
+    pluginParamWatcher.onParameterValueChanged = [this](const juce::String& parameterName, const juce::String& valueText)
+    {
+        if (currentPlugin != nullptr)
+            setStatus(currentPlugin->getName() + " — " + parameterName + ": " + valueText);
+    };
 
     pluginListBox.setModel(&listModel);
     pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
@@ -155,6 +163,13 @@ MainComponent::~MainComponent()
 
     juce::MenuBarModel::setMacMainMenu(nullptr);
 
+    // Disconnect the spinner's poll before teardown proceeds: destruction
+    // order destroys livePreviewWorker before previewBusySpinner, and if a
+    // third-party plugin's destructor pumps the run loop (some AU/VST3s do),
+    // a pending spinner tick could otherwise dispatch into the dead worker.
+    // timerCallback() null-checks isBusy, so clearing it makes that safe.
+    previewBusySpinner.isBusy = nullptr;
+
     pluginParamWatcher.attachTo(nullptr);
 
     // Clear leftColumn's non-owning pointer before pluginEditorPanel is destroyed
@@ -162,6 +177,25 @@ MainComponent::~MainComponent()
     // sites (openEditorClicked/endLivePreviewSession) even though Component's own
     // destructor already self-detaches from its parent's child list.
     leftColumn.setEditorPanel(nullptr);
+
+    // Neutralize any queued/future load completion before anything below is
+    // torn down -- see imageLoadAliveToken's doc comment for why SafePointer
+    // alone doesn't cover the run-loop-pumping-plugin-destructor edge.
+    imageLoadAliveToken.reset();
+
+    // A still-running image-load job holds no reference to any member (it
+    // captures the file by value and reaches back only via a token-and-
+    // SafePointer-guarded callAsync) -- this wait only keeps ThreadPool's own
+    // destructor from force-killing a thread mid-ImageIO-decode. Generous
+    // timeout: RAW decodes legitimately take seconds.
+    imageLoaderPool.removeAllJobs(true, 15000);
+
+    // Full shutdown, not just idle-draining: must happen before
+    // currentPlugin->releaseResources() below, since the worker may still be
+    // inside plugin.processBlock() on it. stopThread() lets any in-flight
+    // pass finish naturally first (run()'s loop only checks
+    // threadShouldExit() between jobs) before forcing the issue.
+    livePreviewWorker.shutdown(5000);
 
     if (currentPlugin != nullptr)
         currentPlugin->releaseResources();
@@ -336,6 +370,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
 {
     commands.add(undoCommand);
     commands.add(redoCommand);
+    commands.add(cancelEditorCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -345,13 +380,27 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
         case undoCommand:
             result.setInfo("Undo", "Undo the last action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier);
-            result.setActive(! undoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr);
+            // ! imageLoadInProgress: without it, Cmd+Z mid-load would mutate
+            // the outgoing image and push a redo entry that the install then
+            // clobbers. JUCE re-queries this at key-press time, so gating here
+            // covers the shortcut, not just the menu item.
+            result.setActive(! undoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case redoCommand:
             result.setInfo("Redo", "Redo the last undone action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
-            result.setActive(! redoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr);
+            result.setActive(! redoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            break;
+
+        case cancelEditorCommand:
+            // Not shown in any menu (setInfo's category/shortcut text is only
+            // ever surfaced if this were added to a PopupMenu, which it isn't) —
+            // purely a keyboard shortcut, mirroring whichever panel's own
+            // Cancel button is currently on-screen.
+            result.setInfo("Cancel Editor", "Cancel the currently open plugin or header editor panel", "Edit", 0);
+            result.addDefaultKeypress(juce::KeyPress::escapeKey, juce::ModifierKeys());
+            result.setActive(pluginEditorPanel != nullptr || headerEditorPanel != nullptr);
             break;
 
         default:
@@ -365,6 +414,14 @@ bool MainComponent::perform(const InvocationInfo& info)
     {
         case undoCommand: undoClicked(); return true;
         case redoCommand: redoClicked(); return true;
+
+        case cancelEditorCommand:
+            if (pluginEditorPanel != nullptr)
+                cancelEditorClicked();
+            else if (headerEditorPanel != nullptr)
+                cancelHeaderEditClicked();
+            return true;
+
         default: return false;
     }
 }
@@ -378,7 +435,7 @@ void MainComponent::updatePluginListEnablement()
     // otherwise silently discard the in-progress edit via loadAndOpenPlugin()'s
     // own panel-swap logic, which is a worse surprise than just disabling the
     // list outright.
-    const bool listInteractive = hasImage && headerEditorPanel == nullptr;
+    const bool listInteractive = hasImage && headerEditorPanel == nullptr && ! imageLoadInProgress;
     pluginListBox.setEnabled(listInteractive);
     listModel.setEnabled(listInteractive);
     leftColumn.setListControlsEnabled(listInteractive);
@@ -388,21 +445,30 @@ void MainComponent::updatePluginListEnablement()
     horizontalZoomSlider.setEnabled(hasImage);
     horizontalScrollBar.setEnabled(hasImage);
 
-    // Split-channel view only makes sense for a 3-channel chunky image (BMP-
-    // 24bit/PNM-P6) and never while the header editor is open (a live BMP
-    // header edit can change biBitCount away from 24, making hasChannelPlanes()
-    // false mid-edit, and header edits have no per-channel meaning at all).
-    const bool splitAllowed = hasImage && headerEditorPanel == nullptr && workingImage->hasChannelPlanes();
-    splitModeToggle.setEnabled(splitAllowed);
-
-    if (! splitAllowed && splitModeToggle.getToggleState())
-        setSplitMode(false);
-
     // The bipolar/unipolar dropdown is only relevant while the plugin editor
     // panel is open — this function already runs after every open/close.
     const bool pluginPanelOpen = pluginEditorPanel != nullptr;
     sampleModeLabel.setVisible(pluginPanelOpen);
     sampleModeCombo.setVisible(pluginPanelOpen);
+
+    // Split-channel view only makes sense for a 3-channel chunky image (BMP-
+    // 24bit/PNM-P6) and never while the header editor is open (a live BMP
+    // header edit can change biBitCount away from 24, making hasChannelPlanes()
+    // false mid-edit, and header edits have no per-channel meaning at all).
+    // Toggling it is *also* disabled while a plugin panel is open: the live-
+    // preview worker thread renders directly from RawImage's own render/plane
+    // caches during a session (see LivePreviewWorker's live-preview-performance
+    // note), and those caches are only safe to touch from one thread at a
+    // time -- toggling split mode would call getChannelPlane()/toJuceImage()
+    // on the message thread concurrently with the worker. Note this disables
+    // *toggling*, not the feature itself: an already-on split mode started
+    // before the panel opened stays on and fully live-editable for the whole
+    // session (channel-scoped Apply is a supported, unrelated code path).
+    const bool splitMeaningful = hasImage && headerEditorPanel == nullptr && workingImage->hasChannelPlanes();
+    splitModeToggle.setEnabled(splitMeaningful && ! pluginPanelOpen && ! imageLoadInProgress);
+
+    if (! splitMeaningful && splitModeToggle.getToggleState())
+        setSplitMode(false);
 }
 
 void MainComponent::syncScrollBarToView()
@@ -438,9 +504,9 @@ void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, doubl
 void MainComponent::handleAsyncUpdate()
 {
     if (pluginEditorPanel != nullptr)
-        refreshLivePreview();
-    else
-        updatePreview();
+        refreshLivePreview(); // must still reprocess bytes -- the glitched region itself re-scopes
+    else if (workingImage != nullptr)
+        updateHighlightOverlay(*workingImage, getCurrentSelectionScope()); // selection-only change: no image rebuild needed at all
 }
 
 void MainComponent::resized()

@@ -15,7 +15,13 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
     {
         menu.addItem(loadImageMenuItem, "Load Image...", ! panelOpen);
         menu.addItem(editHeaderMenuItem, "Edit Header...", callbacks.canEditHeader() && ! panelOpen);
-        menu.addItem(exportImageMenuItem, "Export Image...", callbacks.hasWorkingImage());
+        // Also gated on ! panelOpen: while a plugin's live-preview session is
+        // active, RawImage's render caches (toJuceImage()'s cachedPlainImage)
+        // are being touched by the live-preview worker thread -- see
+        // PROJECT.md's live-preview performance note. Exporting is also more
+        // sensible gated this way anyway: it would otherwise export the
+        // last-committed image, not the current unapplied preview.
+        menu.addItem(exportImageMenuItem, "Export Image...", callbacks.hasWorkingImage() && ! panelOpen);
         menu.addItem(resetMenuItem, "Reset to Original", callbacks.hasOriginalImage() && ! panelOpen);
         menu.addSeparator();
         menu.addItem(rescanPluginsMenuItem, "Rescan Plugins", ! callbacks.isScanning() && ! panelOpen);

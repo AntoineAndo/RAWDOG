@@ -58,11 +58,30 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
    BMP parsing follows `bfOffBits` from the file header rather than assuming a fixed
    54 bytes, so it's correct even with unusual DIB header variants. `toJuceImage()`
    renders the current `pixelBytes` back into a displayable `juce::Image`, handling
-   BMP's bottom-up-row/BGR-order quirks vs PNM's top-down/RGB. It also accepts an
-   optional highlight byte-range (see below).
+   BMP's bottom-up-row/BGR-order quirks vs PNM's top-down/RGB. It always renders
+   plain — the selection highlight is drawn separately, as a line overlay by the
+   viewing component (see "Selection → image highlight" below).
    - TIFF is **not** supported — deliberately deferred (see Deferred Work). BMP/PNM
      were chosen because their headers are simple/fixed-size, so "protected region"
      is trivial to define correctly, unlike TIFF's IFD/strip-offset structure.
+   - **Fujifilm RAF and Adobe DNG camera-raw files *are* supported — but not by
+     `RawImage` itself.** `RawCameraConverter.h/.cpp` sniffs for these formats
+     (RAF's literal `"FUJIFILMCCD-RAW"` magic; DNG's/any TIFF's `II*\0`/`MM\0*`
+     magic — DNG is TIFF-based, and confirming "specifically DNG" vs. "any
+     TIFF-based raw" would need the exact IFD-tag parsing this project avoids
+     project-wide, so this converter opportunistically also handles other
+     TIFF-based camera raws) and, before `RawImage::loadFromFile()` ever runs,
+     decodes the file via macOS's system ImageIO/`CGImageSource` API (backed by
+     `RawCamera.bundle`, the same decoder Preview.app/QuickLook use) and writes
+     the result out as a synthesized 24-bit BMP to a `juce::TemporaryFile`,
+     which is then handed to the same unmodified `loadFromFile()` every other
+     BMP goes through. `RawImage`'s own parsing has zero knowledge of raw
+     formats. This gives the camera's/OS's demosaiced, colour-processed RGB
+     image — not the raw sensor mosaic bytes — with no exposure/white-balance
+     control; RAW format coverage depends on the installed `RawCamera.bundle`
+     version. Wired into `MainComponent::loadImageClicked()`
+     (`MainComponentImageIO.cpp`), which widens its FileChooser wildcard and
+     detects/converts before the normal load path.
    - **`headerBytes` is no longer fully opaque for BMP.** It originally was —
      "the protected region from the original Audacity technique, kept byte-for-byte
      untouched." Two features since punched through that: BMP header editing (below)
@@ -164,6 +183,12 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
    mono `AudioBuffer<float>` through it in `blockSize`-sized chunks, upmixing to
    however many channels the plugin actually wants (`jmax(2, in, out)`) by
    duplicating the mono signal, then reading channel 0 back out.
+   - `processWholeBuffer()` also takes an optional `beforeBlock` callback
+     (default `nullptr`, preserving the old behavior exactly), invoked with
+     each block's 0-based starting sample offset right before that block is
+     processed — the hook parameter automation (see the UI section below) uses
+     to sweep a plugin parameter's value across the buffer instead of holding
+     it static for the whole pass.
 
 4. **`PluginScanner`** (`PluginScanner.h/.cpp`) — wraps
    `AudioPluginFormatManager` + `KnownPluginList`, scans the default VST3/AU search
@@ -308,6 +333,108 @@ purely as a structural refactor with no behavior change:
   actually kept its parameter state regardless of window visibility), then Apply
   didn't close the window (no feedback that anything happened) — that history is
   why Apply-closes-and-commits remains the one dismiss action today.
+- **Parameter automation / fade in-out ramps** (`ParameterAutomation.h`,
+  `ParameterAutomationPanel.h`; a new "Editor"/"Automation" tab strip at the top
+  of `PluginEditorPanel`). Born from a real limitation: applying a plugin to a
+  selection was all-or-nothing — static parameter values for the whole scope, a
+  hard cut at the selection's edges. This lets one or more of the plugin's own
+  parameters ramp from an initial value to a target value across the scope
+  instead, so an edit can fade in/out rather than snap on/off. Deliberately
+  scoped to the single currently-loaded plugin (no multi-plugin chaining — see
+  Deferred below) and to *this* image's selection/byte-position axis, not a
+  separate animation timeline — an earlier direction (an Ableton-style
+  automation graph driving a rendered frame sequence exported as an animated
+  GIF) was explored and abandoned once the actual need turned out to be "smooth
+  the edges of an existing Apply," not "export a new artifact."
+  - **Data model** (`ParameterAutomation.h`, header-only): a `RampSegment` is
+    `{ startFraction, endFraction, initialValue, targetValue, easing }` — the
+    first two are 0..1 fractions of whichever scope is being processed (the
+    selection sub-range, or the whole buffer when there's no selection), so a
+    ramp automatically rescales if the selection is resized, rather than being
+    pinned to an absolute duration. A `ParameterAutomation` bundles a target
+    `parameterIndex`, an `originalValue` (captured when the automation is
+    added, restored if it's removed — see gotcha below), and an ordered list
+    of `RampSegment`s. `evaluateAt(timeMs, totalScopeMs)` holds at the first
+    segment's `initialValue` before it starts, interpolates (with one of 4
+    `Easing` curves: linear/easeIn/easeOut/easeInOut) inside a segment, holds
+    at the *previous* segment's `targetValue` in any gap between segments, and
+    holds at the last segment's `targetValue` after it ends — this is what
+    turns "one fade-in segment + one fade-out segment" into a fade-in/sustain/
+    fade-out envelope without needing a separate "sustain" concept.
+  - **Evaluated per audio block, not once per pass.** `PluginHost::
+    processWholeBuffer()`'s `beforeBlock` hook (above) is where
+    `MainComponent::computeProcessedPixelBytes()` evaluates every active ramp
+    and writes it via `AudioProcessorParameter::setValueNotifyingHost()` — so a
+    parameter can genuinely sweep across the selection instead of the plugin
+    holding one static value for the whole pass. `totalScopeMs` (the fraction
+    denominator) is computed once per call from whichever buffer is about to
+    be processed (selection length or whole-buffer length), so both the
+    selection-scoped and whole-buffer branches share one `beforeBlock` closure.
+  - **Feedback-loop guard.** Ramp-driven `setValueNotifyingHost()` calls are
+    programmatic, but `PluginParameterWatcher` (attached for live-preview
+    refresh) can't tell that apart from a real knob-drag — left unguarded, each
+    ramp-driven write would fire the watcher, which schedules another
+    `refreshLivePreview()`, which reprocesses the same deterministic ramps and
+    ends on the same call, forever. Originally guarded by `ScopedWatcherPause`,
+    which fully detached the watcher for the duration of the whole (then-
+    synchronous, message-thread) processing call — safe at the time because
+    the message thread was blocked for that entire call, so no real concurrent
+    gesture could be missed. Once processing moved to `LivePreviewWorker`'s
+    background thread (see "Live-preview performance" below), a real knob-drag
+    can genuinely happen *concurrently* on the message thread while a ramp
+    evaluates on the worker thread, and a full detach would have wrongly
+    swallowed it. Replaced with `PluginParameterWatcher::ScopedSelfWriteSuppression`,
+    a `thread_local` depth counter checked at the top of
+    `audioProcessorParameterChanged()`/`audioProcessorChanged()`, wrapped only
+    around the two `setValueNotifyingHost()` calls inside the ramp-evaluation
+    `beforeBlock` lambda (now running on the worker thread). Since ramp writes
+    and real gestures now run on genuinely different threads, a per-thread flag
+    correctly distinguishes "my own automated write" from a real gesture with
+    no detach/reattach dance — and as a side effect, removes the old
+    reentrancy risk entirely (a worker-thread ramp write can no longer trigger
+    `onPluginParametersChanged` at all, on any thread).
+  - **UI** (`ParameterAutomationPanel.h`): a small `TabbedButtonBar` ("Editor" /
+    "Automation") added to `PluginEditorPanel` swaps its `Viewport` between the
+    native plugin editor and this panel — Apply/Cancel stay docked at the
+    bottom regardless of which tab is showing, since Apply always commits
+    whatever the live preview currently reflects. "+ Add automated parameter"
+    opens a popup of the plugin's own parameters (excluding ones already
+    added); each automated parameter gets a block with a "Remove parameter"
+    button and a "+ segment" button. Each segment row is two-tiered so its
+    range control gets the full row width: a `juce::Slider::TwoValueHorizontal`
+    range slider on top (with a custom per-instance `LookAndFeel_V4` override —
+    `SegmentRow::RangeSliderLookAndFeel`, applied only to that one `Slider` via
+    `setLookAndFeel()`, not installed globally — drawing the two handles in
+    distinct colors, since JUCE's default two-value-slider drawing uses the
+    same `thumbColourId` for both, differing only by pointer direction) plus a
+    live "X–Y%" readout, then initial value / target value / easing / remove
+    underneath. `ParameterAutomationPanel` owns the
+    `std::vector<ParameterAutomation>` directly (the single source of truth —
+    `MainComponent` reads it via `PluginEditorPanel::getParameterRamps()`
+    rather than keeping its own copy), so ramps are automatically discarded
+    whenever the panel is (Apply or Cancel). Edits are debounced through the
+    same `AsyncUpdater`/`triggerAsyncUpdate()` idiom already used for
+    parameter-change bursts and selection-drag, so a burst of field edits
+    collapses to one live-preview refresh per event-loop turn rather than one
+    per keystroke.
+  - **Gotcha found via manual testing and fixed**: removing an automated
+    parameter used to leave the image visibly unchanged, because nothing ever
+    reset the plugin's actual parameter value — it just stayed at whatever the
+    last ramp evaluation had driven it to. Fixed by capturing `originalValue`
+    when the automation is added (`param->getValue()`) and restoring it via
+    `setValueNotifyingHost()` in `removeAutomation()` before erasing.
+  - **Another gotcha found via manual testing and fixed**: the numeric fields
+    were configured (`setInputRestrictions`/`setText`/`setTooltip`) but never
+    actually added as child components (`addAndMakeVisible()`) — they were
+    silently never painted or interactive, while the easing `ComboBox` and
+    remove `TextButton` (which *were* added) rendered fine. A reminder that
+    configuring a JUCE component isn't the same as parenting it.
+  - **Expected, not buggy**: because a ramp's `initialValue`/`targetValue`
+    fully override the parameter for the segment's span, the plugin's own
+    embedded editor knob will visibly move as a live preview recomputes — the
+    same way a fader moves under DAW automation. Manually tweaking a knob
+    that's also under active automation has no lasting effect: the next
+    live-preview refresh immediately overrides it again via the ramp.
 - **Header editor panel** (`HeaderEditorPanel.h`/`MainComponentHeaderEditor.cpp`,
   opened via File → "Edit Header...", BMP only). Shares `PluginEditorPanel`'s
   embedded-panel-with-Apply/Cancel shape and `leftColumn`'s single panel slot
@@ -364,6 +491,27 @@ purely as a structural refactor with no behavior change:
   that redraws frequently for cosmetic reasons (selection highlight, apply-in-place)
   must not reset user-adjusted view state unless the underlying data's *identity*
   (not just its bytes) genuinely changed.
+  - **Render cache, so a highlight-only repaint stays cheap regardless of
+    image size.** `paint()` used to call `g.drawImageTransformed(image, ...)`
+    unconditionally on *every* repaint — including the ones the selection
+    highlight overlay (above) triggers on every waveform-drag frame — even
+    though `image` itself hadn't changed. On macOS this always resamples/
+    composites the image's *own full pixel dimensions* regardless of the
+    current clip region (confirmed via `CoreGraphicsContext::drawImage`'s
+    source), so for a large photo (this app now loads 24MP+ RAF/DNG
+    conversions) that per-repaint cost was real and was the actual cause of
+    slow selection-dragging that survived the highlight-overlay change.
+    Fixed with a manually-managed `cachedRender` — a `juce::Image` sized to
+    the *viewport* (`getWidth()×getHeight()`), not the source image's own
+    dimensions — rendered once via `ensureCachedRenderUpToDate()` and then
+    just blitted directly (`g.drawImageAt()`) on every repaint; regenerated
+    only when `image`/`scale`/`offset` actually change (`setImage()`,
+    `fitToView()`, `mouseWheelMove()`, `applyZoom()`), never when only
+    `setHighlightLines()` is called. Deliberately not
+    `Component::setBufferedToImage()` — confirmed via JUCE source that a
+    buffered *parent's* cache still gets invalidated by a *child's* repaint
+    bubbling up, so nesting the overlay as a child wouldn't have helped;
+    this manual cache sidesteps that entirely by staying a single component.
 - **`WaveformView`** (`WaveformView.h/.cpp`) — renders the pixel buffer as a
   min/max-per-column waveform. Click-drag selects a **sample range**, which (given
   the current fixed 8-bit-PCM format) is numerically identical to a **byte range**
@@ -376,6 +524,29 @@ purely as a structural refactor with no behavior change:
   zoom+scroll (a `juce::Slider` + `juce::ScrollBar`, wired via
   `WaveformView::onViewChanged` callback so `MainComponent::syncScrollBarToView()`
   keeps the scrollbar's thumb size/position in sync with the view window).
+  - **Render cache, for the same reason `ZoomableImageView` got one.**
+    `mouseDrag()` calls `repaint()` unconditionally on every raw mouse-move
+    event during a selection drag — unlike the image-preview path, this one
+    was never debounced through an `AsyncUpdater`. `paint()`'s per-column
+    min/max scan costs `O(viewLengthSamples)` total (one full pass over every
+    *visible* sample, which defaults to the *entire buffer* until the user
+    zooms in horizontally) — for a large image's tens of millions of samples,
+    that's a synchronous full-buffer scan on every mouse-move, since the
+    trace itself never actually depends on the selection. Fixed identically
+    to `ZoomableImageView`: `ensureCachedTraceUpToDate()` renders the trace
+    (and the "no buffer" placeholder text) into a viewport-sized `cachedTrace`
+    image once, `paint()` just blits it (`g.drawImageAt()`) and then draws
+    the separate, already-cheap selection rect/grip-marks on top — the trace
+    only regenerates when `waveformData`/view/zoom/sample-mode actually
+    change (`setBuffer()`, `updateSampleRange()`, `setHorizontalZoom()`,
+    `setViewStart()`, `setVerticalZoom()`, `setSampleMode()`), never on a
+    plain `mouseDrag()` selection move. A throwaway timing harness measured
+    ~264ms/repaint before this fix (on a 50M-sample synthetic buffer, fully
+    zoomed out) vs. ~0.04ms/repaint after — a ~7000x difference, and the
+    actual dominant cost behind "dragging a selection is slow," bigger than
+    the `ZoomableImageView` fix above. Same class, instantiated 4 times
+    (the main waveform + 3 per-channel split lanes) — each gets its own
+    independent cache, no special-casing needed.
   - **Bug fixed: `paint()`'s per-column min/max was seeded from a hardcoded
     `0.0f`** (silence) instead of the first real sample in that column's range.
     This silently acted as an implicit floor/ceiling: whenever every sample in a
@@ -412,44 +583,59 @@ purely as a structural refactor with no behavior change:
     Every gesture — create, resize, or move — fires `onBeforeSelectionChange`
     once up front, so all three remain a single Undo step and the live
     preview highlight updates during the drag, exactly like creating always did.
-- **Selection → image highlight**: `RawImage::toJuceImage()` takes an optional
-  `juce::Range<int> highlightByteRange`, in visual top-down, unpadded byte order
-  (`getVisualOrderedPixelBytes()`'s coordinate space) — **not** necessarily
-  `pixelBytes`' own raw file-storage order, see the row-flip bug fix in
-  Milestones below. **This used to fill every selected
-  pixel with a 50% yellow blend**, but that made it impossible to judge a
-  plugin's actual live-preview result underneath the tint — it's now a
-  **thin (2px) outline around the selection's boundary only**, leaving
-  interior pixels completely untinted. The boundary test avoids an
-  `O(width × height × thickness²)` per-pixel neighbourhood scan: it
-  precomputes each screen row's selected *column* range once
-  (`std::vector<juce::Range<int>> rowSelection`, one `getIntersectionWith()`
-  call per row, converting a byte-range intersection to a column range via
-  integer division by `channels`), then each pixel's border test is an O(1)
-  left/right-edge distance check plus an O(`outlineThickness`) loop over
-  neighbouring rows for the top/bottom edge — down from
-  `O(thickness²)` per pixel to `O(thickness)`, reusing the exact same
-  per-pixel BMP/PNM layout loop as before, so the highlight/outline is always
-  correctly positioned regardless of format. `toJuceImage()` is now a one-line
-  forwarder to `toJuceImageFromBytes(pixelBytes, highlightByteRange)`, which reads
-  an explicit `juce::MemoryBlock` instead of always reading `this->pixelBytes` —
-  added so the same layout/highlight logic can render an uncommitted live-preview
-  buffer (see plugin editor panel above) without ever mutating `pixelBytes` itself.
-  `WaveformView::onSelectionChanged` fires on every drag frame and on clear;
-  `MainComponent` re-renders the preview (with `resetView=false`) each time —
-  routed through `refreshLivePreview()` while a plugin panel is open (so the live
-  preview rescopes to the new selection), or `updatePreview()` otherwise. This was
-  pulled forward from the original "v2 deferred" list because the mapping turned
-  out to be trivial once the toJuceImage() highlight parameter existed.
-  - **Channel-scoped highlight**: a second `toJuceImageFromBytes()` overload takes
-    a `RawImage::Channel` + a plane-sample range (`getChannelPlane()`'s coordinate
-    space) instead of an interleaved byte range, outlined in that channel's own
-    color (red/green/blue) instead of the fixed yellow. Its `rowSelection`
-    precompute is actually simpler than the interleaved case — a channel plane is
-    already stored in visual top-down row-major order, so a row's selected span is
-    a direct arithmetic slice with no `rowStride`/`bottomUp`/`channels` adjustment
-    needed. Both overloads share the same per-pixel border-drawing loop, factored
-    out into `renderWithRowSelection()`.
+- **Selection → image highlight**: originally baked directly into the
+  rendered `juce::Image`'s pixel data (first a 50% yellow blend over every
+  selected pixel, then a 4-sided outline, then top/bottom-only marker
+  lines — see Milestones below for that lineage) — **all of that is gone
+  now.** The highlight is drawn as a cheap **line overlay by
+  `ZoomableImageView` itself**, on top of a plain rendered image, never
+  touching pixel data at all. `RawImage::toJuceImage()`/
+  `toJuceImageFromBytes()` lost their highlight parameter entirely — always
+  a plain render — and `RawImage::computeHighlightOverlay(juce::Range<int>
+  highlightByteRange)` (plus `computeChannelHighlightOverlay()` for a
+  channel-scoped selection) returns an `optional<HighlightOverlay>` — two
+  row indices (`topRow`/`bottomRow`) — computed via pure `O(1)` integer
+  arithmetic (`start/rowBytes`, `(end-1)/rowBytes`; literally "which row does
+  this fraction of the buffer fall on"), never a loop over `height`. Each
+  line spans the *full image width* rather than just the boundary row's own
+  intersected columns — a deliberate simplification (a partial first/last
+  row's line reads as "here's the selection's vertical extent," not a
+  precise per-column boundary) — so `HighlightOverlay`'s column fields are
+  always `0`/`width` on both lines. `MainComponent::updateHighlightOverlay()`
+  turns that into two `juce::Line<float>` in image-space coordinates and
+  calls `ZoomableImageView::setHighlightLines()`, which `paint()` transforms
+  through the same `AffineTransform` it already uses to draw the image
+  (`getImageToScreenTransform()`, extracted for reuse) and draws with
+  `Graphics::drawLine()` at a constant on-screen thickness — so the marker
+  stays clearly visible at any zoom level, unlike a baked-in outline whose
+  thickness was fixed in image pixels. `ZoomableImageView` deliberately
+  knows nothing about `RawImage`/selections — just image-space line
+  coordinates and a colour — keeping it generic/reusable.
+
+  This is a bigger win than the highlight-rendering optimizations that
+  preceded it (both now deleted, along with `renderWithRowSelection()`
+  entirely): `MainComponent::handleAsyncUpdate()` — the debounced handler
+  for every waveform drag frame — used to call `updatePreview()` unconditionally,
+  which rebuilds the *entire* `width×height` image from raw bytes on every
+  frame, even though a plain selection drag with no plugin panel open never
+  changes `pixelBytes` at all. It now calls `updateHighlightOverlay()`
+  directly in that case — no image rebuild whatsoever, any image size. The
+  one case that doesn't get faster: with a plugin panel open,
+  `refreshLivePreview()` always reprocesses the selection through the
+  plugin on every drag frame regardless (no memoization exists there) — the
+  image content genuinely changes then, independent of how the highlight
+  itself is drawn.
+  - **Channel-scoped highlight**: `computeChannelHighlightOverlay()` takes a
+    plane-sample range (`getChannelPlane()`'s coordinate space) instead of an
+    interleaved byte range — simpler than the interleaved case, since a
+    channel plane is already stored in visual top-down row-major order, so
+    each row's span is a direct arithmetic slice with no
+    `rowStride`/`bottomUp`/`channels` adjustment needed.
+    `MainComponent::updateHighlightOverlay()` picks the overlay colour
+    (red/green/blue vs. the whole-buffer yellow) from `SelectionScope::channel` —
+    the same information `RawImage` used to receive as an explicit `Channel`
+    parameter just to choose a colour, now resolved entirely on the caller
+    side since `RawImage` no longer renders anything highlight-related at all.
   - **Live-preview performance**: on a large image (e.g. full HD, ~6.2MB of pixel
     bytes), the naive version of the above made dragging a selection while a
     plugin panel was open feel frozen — every mouse-move frame re-ran the plugin
@@ -459,21 +645,228 @@ purely as a structural refactor with no behavior change:
     now calls `triggerAsyncUpdate()` instead of recomputing directly, coalescing a
     burst of drag frames into at most one recompute per event-loop turn via
     `handleAsyncUpdate()` — the same debounce idiom `PluginParameterWatcher`
-    already used for parameter-change bursts. (2) `computeProcessedPixelBytes()`
-    and `refreshLivePreview()` no longer float-convert the untouched majority of
+    already used for parameter-change bursts. (2) the recompute (see
+    `LivePreviewWorker` below) no longer float-converts the untouched majority of
     the buffer: bytes outside the selection are a plain byte copy (they're
     provably unchanged, per Apply scoping below), and only the selected
     sub-range pays the float round-trip — `WaveformView::updateSampleRange()`
     (a new method, distinct from `setBuffer()`) writes just that sub-range into
     the waveform's existing buffer rather than reconstructing the whole thing.
-    **Gotcha this introduced and had to fix**: deferring the recompute means
-    `livePreviewBytes` can momentarily lag one event-loop turn behind the true
-    selection (mutated synchronously in `WaveformView` regardless of the
-    deferral) — `applyClicked()`'s `if (livePreviewBytes.isEmpty())` safety net
-    only ever guarded against *absent* preview bytes, not *stale* ones, so a
-    mis-timed Apply click could silently commit the wrong scope. Fixed by calling
-    `handleUpdateNowIfNeeded()` (flushes any pending recompute synchronously) as
-    the first line of `applyClicked()`, restoring the guarantee below.
+  - **Dragging a plugin's own knob was still laggy even after the above** —
+    every parameter change ran the plugin's `processBlock()` pass synchronously
+    *on the message thread* (coalesced via `PluginParameterWatcher`'s
+    `AsyncUpdater` to at most one queued recompute at a time, but each one
+    still fully blocked the thread painting the knob while it ran), so a drag
+    looked like a slideshow instead of a glide. A cheaper first attempt — a
+    reentrancy guard in `PluginParameterWatcher`, on the theory that some
+    native Cocoa/AU plugin editors pump the run loop from inside their own
+    drag-tracking loop and re-enter `handleAsyncUpdate()` — was tried and
+    confirmed (by the user, manually) *not* to fix the actual lag: the
+    dominant case is just the plain sequential one, one full blocking
+    recompute per drag tick, no reentrancy involved. Fixed properly by moving
+    the heavy work off the message thread entirely: **`LivePreviewWorker`**
+    (`LivePreviewWorker.h`/`.cpp`), a dedicated `juce::Thread` with a one-slot
+    "latest request wins" mailbox (`juce::CriticalSection` + `juce::WaitableEvent`) —
+    `submit()` always overwrites whatever hadn't started yet rather than
+    queuing, since only the most recent parameter/selection state is ever
+    worth computing. This is more aligned with JUCE's own expected usage, not
+    less: `juce_AudioProcessor.h`'s header comments explicitly describe
+    `processBlock()`/`reset()` as callbacks "the audio thread" makes, distinct
+    from the message thread, and recommend `AsyncUpdater`-style hand-off to
+    reach the UI from inside them.
+    - What used to be `MainComponent::computeProcessedPixelBytes()` is now a
+      free function inside `LivePreviewWorker.cpp`, running entirely on the
+      worker thread — it only ever touches the `AudioPluginInstance` and plain
+      `juce::MemoryBlock`/`AudioBuffer` values, never `workingImage`/`RawImage`
+      directly, since `RawImage`'s lazy render/plane caches have no locking and
+      are not thread-safe.
+    - **Source-buffer caching, not per-tick copying.** While the plugin panel
+      is open, `updatePluginListEnablement()` already disables Load Image/
+      Reset/Undo/Redo, so `workingImage->pixelBytes` is provably immutable for
+      the whole session — only the selection, channel scope, ramps, and plugin
+      parameters can change. `MainComponent::getOrBuildLivePreviewSource()`
+      exploits this: it lazily builds and caches (`cachedWholeBufferSource`/
+      `cachedChannelSource`, cleared in `endLivePreviewSession()`) an immutable
+      `shared_ptr<const juce::MemoryBlock>` snapshot per scope, shared (not
+      copied) across every request in the session — safe across threads since
+      nothing mutates it after construction.
+    - **Staleness via an epoch counter, not per-job cancellation.**
+      `MainComponent::livePreviewEpoch` is bumped in `endLivePreviewSession()`
+      (both the commit and discard branches) and echoed on every
+      `LivePreviewWorker::Request`/`Result`. `applyLivePreviewResult()` (the
+      relocated tail of the old `refreshLivePreview()` — same image/waveform-
+      update logic, now driven by `LivePreviewWorker::onResultReady` instead of
+      running inline) drops any result whose epoch doesn't match, so a
+      background pass that outlives its session (Apply/Cancel/plugin swap
+      already happened) is silently discarded rather than misapplied. It also
+      routes on the *result's own* echoed channel/selection rather than a
+      freshly-queried scope, since the live selection may have moved again
+      since that particular request was submitted.
+    - **Three distinct flush operations, not one generic "flush"**, since
+      call sites want different things: `submit()` (every live-preview tick,
+      non-blocking), `discardPending()` (Cancel/`endLivePreviewSession(false)`
+      — clears only the not-yet-started request; deliberately does *not* wait
+      for one already in flight, since Cancel never touches the plugin
+      instance, so a still-in-flight pass finishing in the background is
+      harmless and its result is just stale), and `waitUntilIdle()` (`applyClicked()`,
+      replacing the old `if (livePreviewBytes.isEmpty())` safety net entirely —
+      blocks until nothing is in flight or pending, applying every result
+      produced along the way, so `livePreviewBytes` is guaranteed fresh before
+      committing — the same brief-blocking tradeoff `handleUpdateNowIfNeeded()`
+      already made for the selection-drag debounce, just extended to cover the
+      worker). `loadAndOpenPlugin()` also calls `waitUntilIdle()` before
+      `currentPlugin->releaseResources()`, since the plugin instance is
+      genuinely destroyed there and must not race a worker still inside
+      `processBlock()` on it. `~MainComponent()` calls the analogous
+      `livePreviewWorker.shutdown()` (full `stopThread()`, not just idle-
+      draining) before the same `releaseResources()` call.
+    - **Gotcha found and fixed via manual testing**: the earlier reentrancy-
+      guard attempt (above) was reverted once confirmed ineffective, rather
+      than left in alongside the real fix — its rationale (guarding against
+      recursive heavy recompute) no longer applied once `handleAsyncUpdate()`
+      just submits a cheap request, so keeping it would have left a guard with
+      no remaining reason to exist.
+    - **Second gotcha, found via manual testing after the above shipped**:
+      dragging a knob was smooth for roughly the first half-second, then
+      degraded again — worse the faster the drag. Decoupling *compute* wasn't
+      the whole fix: applying a result still re-renders the image on the
+      message thread, and `RawImage::toJuceImageFromBytes()` (the no-selection
+      path — there's no unchanged sub-range to scope a render to when the
+      whole buffer was just processed) is an *uncached*, full `width*height`
+      repaint on every call. With compute no longer gating how often a fresh
+      result appeared, the worker could feed results to the message thread
+      faster than it could render them back-to-back with any idle time —
+      recreating the exact same message-thread-saturation symptom the whole
+      fix was meant to solve, just moved from "compute" to "render." Fixed by
+      throttling *delivery*, not just compute: `LivePreviewWorker` privately
+      inherits `juce::Timer` as well as `juce::Thread` now, ticking at a fixed
+      `deliveryRateHz` (60) that pulls and delivers only the latest available
+      result, discarding how many the worker actually finished in between —
+      the worker still always computes towards the freshest request as fast as
+      it can, but the message thread only ever pays the render cost at a rate
+      no faster than the display can show, regardless. This also simplified
+      the code: the previous per-job `juce::MessageManager::callAsync` push
+      (plus the `alive`/`shared_ptr<atomic<bool>>` dead-object guard protecting
+      it) was removed entirely — a `juce::Timer` callback's lifetime safety is
+      handled by JUCE itself (`stopTimer()` guarantees no more callbacks), so
+      once delivery became a poll instead of a push there was nothing left for
+      that guard to protect.
+    - **RESOLVED (July 2026) — the remaining knob-drag stutter was diagnosed
+      with real measurements and fixed in three further steps.** All numbers
+      below were measured with temporary `DBG()` timing on a 6240×4160 test
+      image (77,875,200 pixel bytes = samples), Debug build; the
+      instrumentation was removed after the user confirmed smoothness, per
+      this doc's measure → confirm → remove convention.
+      - **Cheap compute wins** (first pass, prior session): `blockSize` bumped
+        512 → 4096 (`MainComponent.h`/`LivePreviewWorker.h`) —
+        `processWholeBuffer()`'s cost was dominated by per-block overhead
+        (~5.2µs/block near-constant), so this cut block-boundary crossings
+        ~8x; the accepted tradeoff is ~8x coarser parameter-automation ramp
+        resolution, still thousands of steps across a typical selection.
+        `SampleFormat::bufferToBytes()`'s double-clamp was fused into one
+        (verified byte-identical via a throwaway harness, deleted after
+        passing). The waveform's redundant second `bytesToBuffer()` pass was
+        deduplicated — the worker computes the post-plugin float buffer once
+        into `LivePreviewWorker::Result::waveformSamples`.
+      - **The entire render moved to the worker thread** (`LivePreviewWorker::
+        renderResult()`): image composition (`previewWith*Bytes()` +
+        `toJuceImageFromBytes()`/`...Scoped()`) and the waveform float
+        conversion now run right after compute on the worker, wrapped in
+        `JUCE_AUTORELEASEPOOL`; `applyLivePreviewResult()` became a cheap
+        hand-off (~1-2ms) of `Result::renderedImage`/`waveformSamples`. The
+        two safety questions flagged in the earlier hand-off were researched
+        first, not assumed: (a) macOS `juce::Image` construction/writing goes
+        through `CoreGraphicsPixelData`, which is a private in-memory
+        `CGBitmapContextCreate` bitmap with no window/AppKit/main-thread
+        dependency (confirmed against JUCE source); (b) the `RawImage`
+        render-cache invariant was closed by call-site audit — `splitModeToggle`
+        and Export are now also disabled while the plugin panel is open (both
+        could previously touch the render caches on the message thread
+        concurrently with the worker), and `endLivePreviewSession()` calls
+        `waitUntilIdle()` unconditionally so no in-flight render can outlive
+        the session. Verified with a second throwaway harness (Apply-scoping
+        invariant, pixel-identical scoped-vs-full renders, waveform sample
+        math; deleted after passing).
+      - **The final, dominant residual — the paint caches — was the actual
+        stutter.** Each delivered result unconditionally invalidated
+        `WaveformView`'s `cachedTrace` and `ZoomableImageView`'s
+        `cachedRender`, whose rebuilds run synchronously inside `paint()` on
+        the message thread. Measured: the trace rebuild's per-column min/max
+        scan is O(viewLengthSamples) — **~406ms per rebuild** fully zoomed out
+        on the 77.9M-sample buffer, recurring every ~440ms for the whole drag
+        (the message thread spent ~430 of every ~440ms there); the image
+        viewport resample added ~21–28ms. A 500Hz message-thread stall
+        watchdog cross-correlated by timestamp showed **zero unattributed
+        stalls** — ruling out plugin-internal lock contention between the
+        plugin's editor and the worker's `processBlock()`. (This also
+        explained the "smooth at first, then stutters" symptom: the first
+        ~165ms+ of a drag has no delivered result yet, so nothing heavy runs
+        on the message thread until deliveries begin.) Fixed by:
+        1. **`WaveformPeaks.h`** — an exact min/max bucket peak cache
+           (`samplesPerBucket = 512`, the standard audio-editor technique,
+           single level), written as pure free functions over plain arrays so
+           a CLI harness can verify them without a GUI. `WaveformView` keeps
+           `peakMins`/`peakMaxs` in sync inside `setBuffer()`/
+           `updateSampleRange()` (both now take an optional precomputed
+           `WaveformPeaks::Partial`), and `ensureCachedTraceUpToDate()`'s
+           per-column scan aggregates fully-covered buckets + raw-scans the
+           partial head/tail — **byte-identical output to the old raw scan**
+           (proven with a throwaway harness across buffer sizes, view
+           windows, and splice scenarios; deleted after passing). Trace
+           rebuild: ~406ms → **~1.4–3.7ms**. The display-only setters
+           (zoom/pan/vertical zoom/sample mode) never touch peaks, so their
+           previously-just-as-expensive rebuilds got the same speedup free.
+        2. **Worker-side peak precompute** — `renderResult()` also fills
+           `Result::waveformPeaks` (only buckets *fully contained* in the
+           changed range, absolute bucket alignment from the selection start;
+           the partial edge buckets are recomputed by the view from the
+           already-spliced data). Without this, a no-selection delivery would
+           pay an O(numSamples) peak rebuild on the message thread per
+           delivery — the same shape of cost the worker exists to absorb.
+        3. **Session-scoped fast resample** — `ZoomableImageView::
+           setFastResampling()` switches the viewport cache rebuild to
+           nearest-neighbour (`lowResamplingQuality` → `kCGInterpolationNone`
+           on macOS) while a plugin panel is open; toggled in
+           `openEditorClicked()`/`endLivePreviewSession()`, self-invalidating,
+           full quality returns on session end.
+      - **Busy spinner**: since a preview pass on a large image legitimately
+        takes a worker-cycle (~165ms+) to land, the preview intentionally lags
+        the knob even though the UI stays smooth. `BusySpinner`
+        (`BusySpinner.h`, sitting left of the status label in
+        `RightColumnPanel`'s status strip) polls `LivePreviewWorker::isBusy()`
+        at ~30Hz, showing a small rotating arc while a pass is in flight or
+        queued and hiding itself (with a few-tick linger to avoid flicker
+        between back-to-back passes) when idle.
+  - **Scoped image *render*, on top of the scoped DSP above.** Even with the
+    plugin/float-conversion work scoped to the selection, `refreshLivePreview()`
+    still called `toJuceImageFromBytes(livePreviewBytes)` — a full per-pixel
+    BGR/RGB-extraction render of *every* pixel — on every single plugin
+    parameter tweak, even though only the selected rows' bytes actually
+    differ from the already-committed `pixelBytes`. Fixed with a third
+    `RawImage` lazy cache (`cachedPlainImage`/`plainImageDirty`, same idiom
+    and same invalidation sites as `channelPlanes`/`visualOrderedPixelBytes`
+    — every place `pixelBytes` itself is mutated) backing `toJuceImage()`,
+    plus a new `toJuceImageFromBytesScoped(bytesToRender, firstRow, lastRow)`
+    that copies the cached plain render and re-renders only rows
+    `[firstRow, lastRow]` — reusing the exact row range already computed for
+    the selection-highlight overlay (`computeHighlightOverlay()`/
+    `computeChannelHighlightOverlay()`), so no new geometry logic was needed.
+    `refreshLivePreview()` uses this scoped path whenever a selection is
+    active, falling back to the full render only when there's no selection
+    (whole-buffer apply — no "unchanged outside a sub-range" guarantee to
+    exploit there). **A real correctness landmine, found via JUCE source
+    research before writing any code, not by trial and error**: `juce::Image`
+    is a reference-counted COW handle, and opening a writable
+    `juce::Image::BitmapData` on a copy does **not** automatically duplicate
+    a shared pixel buffer first — without an explicit
+    `result.duplicateIfShared()` call before writing, the "scoped" write
+    would silently corrupt the shared cached original. `duplicateIfShared()`
+    does a real full-buffer `memcpy`, so this isn't literally free for the
+    untouched rows — but a raw memcpy is far cheaper than the per-pixel
+    render loop it replaces. Verified via a throwaway harness (built, run,
+    deleted): re-rendering `toJuceImage()` after a scoped call returned
+    byte-identical pixels to before it (proving the cache wasn't corrupted),
+    and a ~25x speedup on a 2000×1500 image re-rendering only 51 of 1500 rows.
 - **Apply scoping**: if `WaveformView::getSelectionSampleRange()` is non-empty,
   `MainComponent::computeProcessedPixelBytes()` (the shared helper behind both the
   live preview and Apply) copies just that sub-range into a temporary buffer,
@@ -498,6 +891,11 @@ purely as a structural refactor with no behavior change:
     channel-scoped commit (preserving the other two channels' plane caches) or
     `workingImage->applyVisualOrderedBytes()` otherwise (splicing back into
     `pixelBytes`' real, possibly bottom-up/padded layout).
+  - **Parameter ramps** (see the Parameter automation entry above) evaluate
+    inside this same per-block loop via `PluginHost::processWholeBuffer()`'s
+    `beforeBlock` hook, so a selection-scoped Apply can fade a parameter across
+    the scope instead of holding it static — same selection-scoping logic
+    either way, no separate code path.
 - **Undo/redo**: `std::vector<EditorSnapshot> undoStack`/`redoStack` on
   `MainComponent`, where `EditorSnapshot` bundles `headerBytes`, `pixelBytes`, the
   waveform selection range, *and* (since the split-channel feature) which channel
@@ -660,6 +1058,33 @@ purely as a structural refactor with no behavior change:
   waveform/selection at all (stripped by the reorder), consistent with how
   channel planes already exclude them; PNM is unaffected (never bottom-up,
   never padded).
+- *(user-requested feature)* — **parameter automation (fade in/out ramps)**:
+  one or more of a plugin's own parameters can ramp from an initial to a
+  target value across a selection (or the whole buffer), with easing, via a
+  new "Automation" tab on the plugin editor panel — smooths what used to be a
+  hard on/off cut at a selection's edges. Two directions were explored and
+  abandoned first: multi-plugin chaining, and an Ableton-style
+  automation-graph-driving-a-rendered-frame-sequence idea exported as an
+  animated GIF — both replaced by this narrower, actually-needed feature once
+  discussed further. See the Parameter automation UI entry above for the full
+  design (data model, per-block evaluation, the watcher feedback-loop guard,
+  the two-value range-slider UI, and two bugs found via manual testing and
+  fixed: a stuck parameter value on removal, and numeric fields configured but
+  never actually added as child components).
+- *(performance fix)* — **plugin-knob live preview decoupled from the message
+  thread**: dragging a plugin's own embedded knob no longer blocks the thread
+  painting it. `LivePreviewWorker` runs the plugin `processBlock()` pass on a
+  dedicated background thread with "latest request wins" coalescing, instead
+  of synchronously on the message thread once per parameter change — plus a
+  second fix once compute-alone turned out to be insufficient: *delivering* a
+  result back to the message thread is also throttled to a fixed rate
+  (`juce::Timer` at 60Hz) instead of pushed on every completed pass, since the
+  render itself is real, uncached work that could otherwise saturate the
+  message thread just as badly as the old compute-on-message-thread design
+  did. See the "Live-preview performance" entry above for the full design
+  (source-buffer caching, the epoch staleness check, the three flush
+  operations, the `thread_local` feedback-loop guard that replaced
+  `ScopedWatcherPause`, and the throttled-delivery timer).
 
 ## What's NOT done yet (planned)
 
@@ -684,7 +1109,9 @@ purely as a structural refactor with no behavior change:
 - **Frequency-band selection** (isolate a band within a time range, not just full-
   spectrum time selection) — needs STFT split/recombine, real DSP complexity.
 - **Plugin chaining/rack** (multiple plugins in sequence) — current UX is
-  one-plugin-at-a-time (apply, inspect, apply again manually).
+  one-plugin-at-a-time (apply, inspect, apply again manually). Parameter
+  automation (ramps) was deliberately scoped to the single currently-loaded
+  plugin for this same reason — see the Parameter automation UI entry above.
 - **TIFF support** — only worth adding once a real TIFF library (e.g. libtiff)
   manages the fragile IFD/strip-offset header, exposing just a pixel-data pointer
   to the same pipeline that already treats header-vs-pixel-bytes as protected vs.

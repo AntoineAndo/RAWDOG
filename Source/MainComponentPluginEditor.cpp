@@ -11,6 +11,7 @@ void MainComponent::loadAndOpenPlugin(int row)
     if (currentPlugin != nullptr)
     {
         endLivePreviewSession(false); // discards any unapplied live preview and detaches the watcher
+        livePreviewWorker.waitUntilIdle(); // must not race a background pass still using the plugin we're about to release
         currentPlugin->releaseResources();
         currentPlugin = nullptr;
     }
@@ -56,13 +57,18 @@ void MainComponent::openEditorClicked()
         return;
     }
 
-    pluginEditorPanel = std::make_unique<PluginEditorPanel>(std::unique_ptr<juce::AudioProcessorEditor>(editor), [this]
+    pluginEditorPanel = std::make_unique<PluginEditorPanel>(std::unique_ptr<juce::AudioProcessorEditor>(editor), *currentPlugin,
+    [this]
     {
         applyClicked();
     },
     [this]
     {
         cancelEditorClicked();
+    },
+    [this]
+    {
+        refreshLivePreview();
     });
 
     leftColumn.setEditorPanel(pluginEditorPanel.get());
@@ -77,56 +83,30 @@ void MainComponent::openEditorClicked()
     updatePluginListEnablement();
     menuModel.menuItemsChanged();
 
+    // Rapid setImage() refreshes are about to start arriving (one per
+    // delivered live-preview result) -- trade preview resample quality for
+    // per-delivery message-thread time until the session ends.
+    imagePreview.setFastResampling(true);
+
     // Reflects the plugin's default parameter state immediately, before any tweak,
-    // so livePreviewBytes is populated even if Apply is clicked with zero changes.
+    // so a live-preview result is populated even if Apply is clicked with zero changes.
     refreshLivePreview();
 }
 
-juce::MemoryBlock MainComponent::computeProcessedPixelBytes(juce::AudioPluginInstance& plugin,
-                                                              const juce::Range<int>& selection,
-                                                              std::optional<RawImage::Channel> channel)
+std::shared_ptr<const juce::MemoryBlock> MainComponent::getOrBuildLivePreviewSource(std::optional<RawImage::Channel> channel)
 {
-    plugin.reset(); // clean DSP state before every independent reprocessing pass, so repeated
-                     // live-preview passes against the same source bytes stay deterministic for
-                     // stateful plugins (filters, reverbs, etc).
-
-    // Channel-scoped: process that channel's deinterleaved plane instead of
-    // the interleaved buffer. Same selection-scoping logic either way — the
-    // caller (refreshLivePreview/applyClicked) decides whether the result is
-    // an edited plane (to commit via applyChannelBytes()) or the edited whole
-    // visual-order buffer (to commit via applyVisualOrderedBytes()).
-    const juce::MemoryBlock& source = channel.has_value() ? workingImage->getChannelPlane(*channel)
-                                                           : workingImage->getVisualOrderedPixelBytes();
-
-    // Bytes outside the selection are provably untouched (see PROJECT.md's "Apply
-    // scoping"), so start from a plain byte copy of the source and only pay the
-    // float round-trip for the selected sub-range — on a large image with a small
-    // selection, converting the whole buffer on every live-preview tick was pure
-    // waste.
-    if (! selection.isEmpty())
+    if (channel.has_value())
     {
-        const int start = selection.getStart();
-        const int length = selection.getLength();
-
-        const auto mode = workingImage->getSampleMode();
-        juce::MemoryBlock selectionBytes(static_cast<const char*>(source.getData()) + start, (size_t) length);
-        auto selectedBuffer = SampleFormat::bytesToBuffer(selectionBytes, mode);
-        PluginHost::processWholeBuffer(plugin, selectedBuffer, blockSize);
-        SampleFormat::bufferToBytes(selectedBuffer, selectionBytes, mode);
-
-        juce::MemoryBlock result(source);
-        result.copyFrom(selectionBytes.getData(), start, (size_t) length);
-        return result;
+        auto& cached = cachedChannelSource[(size_t) *channel];
+        if (cached == nullptr)
+            cached = std::make_shared<const juce::MemoryBlock>(workingImage->getChannelPlane(*channel));
+        return cached;
     }
 
-    const auto mode = workingImage->getSampleMode();
-    auto buffer = SampleFormat::bytesToBuffer(source, mode);
-    PluginHost::processWholeBuffer(plugin, buffer, blockSize);
+    if (cachedWholeBufferSource == nullptr)
+        cachedWholeBufferSource = std::make_shared<const juce::MemoryBlock>(workingImage->getVisualOrderedPixelBytes());
 
-    juce::MemoryBlock result;
-    result.setSize(source.getSize());
-    SampleFormat::bufferToBytes(buffer, result, mode);
-    return result;
+    return cachedWholeBufferSource;
 }
 
 void MainComponent::sampleModeChanged()
@@ -146,61 +126,109 @@ void MainComponent::sampleModeChanged()
 
 void MainComponent::refreshLivePreview()
 {
-    if (workingImage == nullptr || currentPlugin == nullptr)
+    // pluginEditorPanel is required (getParameterRamps() below), not just the
+    // plugin: a plugin that loaded but failed to open an editor leaves the
+    // watcher attached with no panel, and a spontaneous audioProcessorChanged
+    // (program/latency change) would land here.
+    if (workingImage == nullptr || currentPlugin == nullptr || pluginEditorPanel == nullptr)
         return;
 
     const auto scope = getCurrentSelectionScope();
 
-    if (scope.channel.has_value())
-    {
-        livePreviewChannel = scope.channel;
-        livePreviewChannelPlaneBytes = computeProcessedPixelBytes(*currentPlugin, scope.range, scope.channel);
-        livePreviewBytes = workingImage->previewWithChannelBytes(*scope.channel, livePreviewChannelPlaneBytes);
+    // Immediate visual feedback for the selection lines themselves -- cheap,
+    // stays on the message thread, independent of however long the heavy
+    // recompute below takes to come back.
+    updateHighlightOverlay(*workingImage, scope);
 
-        imagePreview.setImage(workingImage->toJuceImageFromBytes(livePreviewBytes, *scope.channel, scope.range), false);
+    LivePreviewWorker::Request request;
+    request.plugin = currentPlugin.get();
+    request.image = workingImage.get();
+    request.source = getOrBuildLivePreviewSource(scope.channel);
+    request.channel = scope.channel;
+    request.selection = scope.range;
+    request.sampleMode = workingImage->getSampleMode();
+    request.ramps = pluginEditorPanel->getParameterRamps();
+    request.sampleRate = sampleRate;
+    request.blockSize = blockSize;
+    request.epoch = livePreviewEpoch;
 
-        auto& laneView = channelWaveformViews[(size_t) *scope.channel];
+    // TEMPORARY diagnostic (see the matching note in PluginParameterWatcher.h).
+    DBG("[refreshLivePreview] submit (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
 
-        if (! scope.range.isEmpty())
-        {
-            juce::MemoryBlock selectionBytes(static_cast<const char*>(livePreviewChannelPlaneBytes.getData()) + scope.range.getStart(),
-                                              (size_t) scope.range.getLength());
-            laneView.updateSampleRange(scope.range.getStart(), SampleFormat::bytesToBuffer(selectionBytes, workingImage->getSampleMode()));
-        }
-        else
-        {
-            laneView.setBuffer(SampleFormat::bytesToBuffer(livePreviewChannelPlaneBytes, workingImage->getSampleMode()), false);
-        }
+    livePreviewWorker.submit(std::move(request));
+}
 
+void MainComponent::applyLivePreviewResult(LivePreviewWorker::Result result)
+{
+    // Stale: the session this was computed for already ended (Apply/Cancel,
+    // or a different plugin panel opened) before this background pass
+    // finished -- see LivePreviewWorker::Request::epoch.
+    if (pluginEditorPanel == nullptr || result.epoch != livePreviewEpoch)
         return;
-    }
 
-    livePreviewChannel.reset();
-    livePreviewVisualOrderBytes = computeProcessedPixelBytes(*currentPlugin, scope.range, std::nullopt);
-    livePreviewBytes = workingImage->previewWithVisualOrderedBytes(livePreviewVisualOrderBytes);
-
-    imagePreview.setImage(workingImage->toJuceImageFromBytes(livePreviewBytes, scope.range), false);
-
-    if (! scope.range.isEmpty())
+    // Route on the result's own channel/selection, not a freshly-queried
+    // getCurrentSelectionScope() -- the live selection may have moved again
+    // since this particular request was submitted, and processedBytes only
+    // ever corresponds to what was current at submit time (a newer request,
+    // if any, is already in flight or queued and will supersede this).
+    //
+    // Everything below is now just a hand-off of already-finished data --
+    // the actual render (image composition + waveform float conversion)
+    // happened on the worker thread, in LivePreviewWorker::renderResult(),
+    // right after compute. No RawImage method is called here anymore.
+    if (result.channel.has_value())
     {
-        // Mirror the scoped conversion above: only the selected sub-range of
-        // livePreviewVisualOrderBytes actually changed, so only that sub-range
-        // of the waveform's buffer needs updating, instead of reconverting the
-        // whole (possibly huge) buffer to float again just to refresh a small
-        // part of it.
-        juce::MemoryBlock selectionBytes(static_cast<const char*>(livePreviewVisualOrderBytes.getData()) + scope.range.getStart(),
-                                          (size_t) scope.range.getLength());
-        waveformView.updateSampleRange(scope.range.getStart(), SampleFormat::bytesToBuffer(selectionBytes, workingImage->getSampleMode()));
+        livePreviewChannel = result.channel;
+        livePreviewChannelPlaneBytes = std::move(result.processedBytes);
+
+        imagePreview.setImage(std::move(result.renderedImage), false);
+
+        auto& laneView = channelWaveformViews[(size_t) *result.channel];
+        if (! result.selection.isEmpty())
+            laneView.updateSampleRange(result.selection.getStart(), result.waveformSamples, std::move(result.waveformPeaks));
+        else
+            laneView.setBuffer(std::move(result.waveformSamples), false, std::move(result.waveformPeaks));
     }
     else
     {
-        waveformView.setBuffer(SampleFormat::bytesToBuffer(livePreviewVisualOrderBytes, workingImage->getSampleMode()), false);
+        livePreviewChannel.reset();
+        livePreviewVisualOrderBytes = std::move(result.processedBytes);
+
+        imagePreview.setImage(std::move(result.renderedImage), false);
+
+        if (! result.selection.isEmpty())
+            waveformView.updateSampleRange(result.selection.getStart(), result.waveformSamples, std::move(result.waveformPeaks));
+        else
+            waveformView.setBuffer(std::move(result.waveformSamples), false, std::move(result.waveformPeaks));
     }
+
+    // TEMPORARY diagnostic (see the matching note in PluginParameterWatcher.h).
+    DBG("[applyLivePreviewResult] delivered (t=" << juce::Time::getMillisecondCounterHiRes() << ")");
 }
 
 void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
 {
-    if (commitToWorkingImage && ! livePreviewBytes.isEmpty())
+    // Both unconditional: a not-yet-started request is simply thrown away,
+    // and bumping the epoch makes any already-in-flight background pass's
+    // eventual result recognizably stale (see applyLivePreviewResult()) --
+    // regardless of whether this session is ending via commit or discard.
+    livePreviewWorker.discardPending();
+    ++livePreviewEpoch;
+
+    // Unconditional, both commit and discard: LivePreviewWorker::renderResult()
+    // now reads workingImage directly (via Request::image) on the worker
+    // thread, so nothing may mutate/reassign workingImage -- which becomes
+    // possible again the instant this function returns (Load/Reset/Undo/Redo
+    // re-enable via updatePluginListEnablement() below) -- while a render
+    // could still be in flight. applyClicked() already calls waitUntilIdle()
+    // before this, so this is a no-op there; Cancel/plugin-swap gain at most
+    // one render's worth of latency on dismiss, not a per-frame cost.
+    livePreviewWorker.waitUntilIdle();
+
+    const bool haveResult = livePreviewChannel.has_value() ? ! livePreviewChannelPlaneBytes.isEmpty()
+                                                            : ! livePreviewVisualOrderBytes.isEmpty();
+
+    if (commitToWorkingImage && haveResult)
     {
         if (livePreviewChannel.has_value())
             workingImage->applyChannelBytes(*livePreviewChannel, livePreviewChannelPlaneBytes); // preserves the other 2 channels' caches
@@ -208,10 +236,22 @@ void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
             workingImage->applyVisualOrderedBytes(livePreviewVisualOrderBytes);
     }
 
-    livePreviewBytes.reset();
     livePreviewChannelPlaneBytes.reset();
     livePreviewVisualOrderBytes.reset();
     livePreviewChannel.reset();
+
+    // workingImage->pixelBytes may change once this session ends (a commit
+    // above, or Undo/Reset/a header edit becoming possible again once the
+    // panel closes) -- these cached snapshots must not outlive that.
+    cachedWholeBufferSource.reset();
+    for (auto& cached : cachedChannelSource)
+        cached.reset();
+
+    // Full-quality resampling comes back with the session's end -- the
+    // Apply/Cancel paths' updatePreview() right after this re-renders the
+    // preview at normal quality either way.
+    imagePreview.setFastResampling(false);
+
     leftColumn.setEditorPanel(nullptr);
     pluginEditorPanel.reset();
     pluginParamWatcher.attachTo(nullptr);
@@ -223,11 +263,9 @@ void MainComponent::applyClicked()
 {
     // A selection drag fires onSelectionChanged on every mouse-move frame, which
     // MainComponent coalesces into at most one recompute per event-loop turn (see
-    // handleAsyncUpdate()) — but that means livePreviewBytes can momentarily lag
-    // behind the true current selection between the last drag frame and the next
-    // turn. Flush any pending recompute synchronously first, so the "isEmpty()"
-    // safety net below can't be fooled by a *stale* (rather than merely absent)
-    // livePreviewBytes into committing the wrong scope.
+    // handleAsyncUpdate()) — but that means a refreshLivePreview() submit can
+    // momentarily lag behind the true current selection between the last drag
+    // frame and the next turn. Flush that first.
     handleUpdateNowIfNeeded();
 
     if (workingImage == nullptr)
@@ -247,20 +285,12 @@ void MainComponent::applyClicked()
     const auto scope = getCurrentSelectionScope();
     const bool hadSelection = ! scope.range.isEmpty();
 
-    if (livePreviewBytes.isEmpty()) // safety net: panel open but no refresh happened yet
-    {
-        if (scope.channel.has_value())
-        {
-            livePreviewChannel = scope.channel;
-            livePreviewChannelPlaneBytes = computeProcessedPixelBytes(*currentPlugin, scope.range, scope.channel);
-            livePreviewBytes = workingImage->previewWithChannelBytes(*scope.channel, livePreviewChannelPlaneBytes);
-        }
-        else
-        {
-            livePreviewVisualOrderBytes = computeProcessedPixelBytes(*currentPlugin, scope.range, std::nullopt);
-            livePreviewBytes = workingImage->previewWithVisualOrderedBytes(livePreviewVisualOrderBytes);
-        }
-    }
+    // Block until the background worker has delivered the true latest result
+    // (openEditorClicked() guarantees at least one submit() already happened,
+    // so a live-preview result is always populated by the time this returns) --
+    // guarantees the committed bytes are byte-identical to what was just
+    // previewed, the same guarantee the old synchronous path made.
+    livePreviewWorker.waitUntilIdle();
 
     setStatus(hadSelection ? "Applied " + currentPlugin->getName() + " to selection."
                             : "Applied " + currentPlugin->getName() + " to the whole buffer.");

@@ -16,9 +16,11 @@ public:
                      juce::Component& horizontalScrollBarIn,
                      juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
                      juce::Component& blueWaveformIn, juce::Button& splitToggleIn,
-                     juce::Label& sampleModeLabelIn, juce::ComboBox& sampleModeComboIn)
+                     juce::Label& sampleModeLabelIn, juce::ComboBox& sampleModeComboIn,
+                     juce::Component& busySpinnerIn)
         : imagePreviewRef(imagePreviewIn), statusLabelRef(statusLabelIn),
           sampleModeLabelRef(sampleModeLabelIn), sampleModeComboRef(sampleModeComboIn),
+          busySpinnerRef(busySpinnerIn),
           waveformSection(waveformViewIn, waveformZoomSliderIn, waveformZoomLabelIn,
                           horizontalZoomSliderIn, horizontalScrollBarIn,
                           redWaveformIn, greenWaveformIn, blueWaveformIn, splitToggleIn)
@@ -29,6 +31,11 @@ public:
         addAndMakeVisible(statusLabelRef);
         addAndMakeVisible(sampleModeLabelRef);
         addAndMakeVisible(sampleModeComboRef);
+
+        // The spinner manages its own visibility (shown only while a
+        // live-preview pass is computing) -- addChildComponent, not
+        // addAndMakeVisible, so it starts hidden.
+        addChildComponent(busySpinnerRef);
 
         layout.setItemLayout(0, 100, -1.0, -1.0); // preview: min 100px, fills remainder
         layout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
@@ -44,6 +51,12 @@ public:
 
         auto statusArea = area.removeFromBottom(24);
         area.removeFromBottom(8);
+
+        // Spinner square on the left of the status strip, text after it --
+        // the text keeps a constant small indent so it doesn't reflow when
+        // the spinner appears/disappears.
+        busySpinnerRef.setBounds(statusArea.removeFromLeft(24).reduced(3));
+        statusArea.removeFromLeft(2);
         statusLabelRef.setBounds(statusArea);
 
         // Fixed strip for the bipolar/unipolar controls, above the preview.
@@ -66,6 +79,7 @@ private:
     juce::Label& statusLabelRef;
     juce::Label& sampleModeLabelRef;
     juce::ComboBox& sampleModeComboRef;
+    juce::Component& busySpinnerRef;
     WaveformSectionPanel waveformSection;
     juce::StretchableLayoutManager layout;
     juce::StretchableLayoutResizerBar resizerBar { &layout, 1, false /*horizontal bar, dragged up/down*/ };

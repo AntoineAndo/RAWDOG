@@ -16,7 +16,8 @@ std::unique_ptr<juce::AudioPluginInstance> PluginHost::createInstance(
 
 void PluginHost::processWholeBuffer(juce::AudioPluginInstance& plugin,
                                      juce::AudioBuffer<float>& monoBuffer,
-                                     int blockSize)
+                                     int blockSize,
+                                     std::function<void(int blockStartSample)> beforeBlock)
 {
     const int numChannels = juce::jmax(2, plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels());
     const int totalSamples = monoBuffer.getNumSamples();
@@ -27,6 +28,9 @@ void PluginHost::processWholeBuffer(juce::AudioPluginInstance& plugin,
     int pos = 0;
     while (pos < totalSamples)
     {
+        if (beforeBlock)
+            beforeBlock(pos);
+
         const int numThisBlock = juce::jmin(blockSize, totalSamples - pos);
 
         workBuffer.setSize(numChannels, numThisBlock, false, false, true);
