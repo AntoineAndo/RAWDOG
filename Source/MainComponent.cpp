@@ -69,7 +69,7 @@ MainComponent::MainComponent()
     sampleModeLabel.setVisible(false);
     sampleModeCombo.setVisible(false); // hidden until a plugin panel opens
 
-    for (int c = 0; c < 3; ++c)
+    for (int c = 0; c < 4; ++c)
     {
         auto* view = &channelWaveformViews[(size_t) c];
         view->onViewChanged = [this] { syncScrollBarToView(); };
@@ -83,7 +83,7 @@ MainComponent::MainComponent()
             // clearSelection()) deliberately, since clearSelection() itself fires
             // onBeforeSelectionChange and would recurse into pushUndoState() for
             // the "losing" lane.
-            for (int other = 0; other < 3; ++other)
+            for (int other = 0; other < 4; ++other)
                 if (other != c)
                     channelWaveformViews[(size_t) other].setSelectionSampleRange({});
 
@@ -91,6 +91,10 @@ MainComponent::MainComponent()
                 pushUndoState();
         };
     }
+
+    // Hidden until refreshChannelWaveforms() shows it for a loaded PNG that
+    // actually has an alpha channel — see hasAlphaChannel().
+    channelWaveformViews[3].setVisible(false);
 
     livePreviewWorker.onResultReady = [this](LivePreviewWorker::Result result) { applyLivePreviewResult(std::move(result)); };
     previewBusySpinner.isBusy = [this] { return livePreviewWorker.isBusy() || imageLoadInProgress; };
@@ -135,7 +139,7 @@ MainComponent::MainComponent()
         pluginListBox.repaint();
     };
 
-    setStatus("Load a BMP or PNM image, then double-click a plugin to load it and tweak/apply.");
+    setStatus("Load a BMP, PNM, or PNG image, then double-click a plugin to load it and tweak/apply.");
     updatePluginListEnablement();
 
     setSize(900, 700);
@@ -329,10 +333,12 @@ void MainComponent::restoreSelectionScope(std::optional<RawImage::Channel> chann
 void MainComponent::setSplitMode(bool enabled)
 {
     splitModeToggle.setToggleState(enabled, juce::dontSendNotification);
-    rightColumn.updateSplitVisibility();
 
     if (enabled)
     {
+        // Must run before updateSplitVisibility() below -- it's what decides
+        // whether the alpha lane is visible for this image, and the split
+        // panel's layout needs to already reflect that when it (re)lays out.
         refreshChannelWaveforms(true);
     }
     else
@@ -342,6 +348,7 @@ void MainComponent::setSplitMode(bool enabled)
             view.setSelectionSampleRange({});
     }
 
+    rightColumn.updateSplitVisibility();
     updatePreview();
 }
 
@@ -350,9 +357,14 @@ void MainComponent::refreshChannelWaveforms(bool resetView)
     if (workingImage == nullptr || ! workingImage->hasChannelPlanes())
         return;
 
-    const RawImage::Channel channels[3] = { RawImage::Channel::red, RawImage::Channel::green, RawImage::Channel::blue };
+    const bool hasAlpha = workingImage->hasAlphaChannel();
+    channelWaveformViews[3].setVisible(hasAlpha);
 
-    for (int c = 0; c < 3; ++c)
+    const RawImage::Channel channels[4] = { RawImage::Channel::red, RawImage::Channel::green,
+                                             RawImage::Channel::blue, RawImage::Channel::alpha };
+    const int numChannels = hasAlpha ? 4 : 3;
+
+    for (int c = 0; c < numChannels; ++c)
         channelWaveformViews[(size_t) c].setBuffer(SampleFormat::bytesToBuffer(workingImage->getChannelPlane(channels[c]), workingImage->getSampleMode()), resetView);
 }
 
@@ -451,8 +463,8 @@ void MainComponent::updatePluginListEnablement()
     sampleModeLabel.setVisible(pluginPanelOpen);
     sampleModeCombo.setVisible(pluginPanelOpen);
 
-    // Split-channel view only makes sense for a 3-channel chunky image (BMP-
-    // 24bit/PNM-P6) and never while the header editor is open (a live BMP
+    // Split-channel view only makes sense for a 3- or 4-channel chunky image
+    // (BMP-24bit/PNM-P6/PNG) and never while the header editor is open (a live BMP
     // header edit can change biBitCount away from 24, making hasChannelPlanes()
     // false mid-edit, and header edits have no per-channel meaning at all).
     // Toggling it is *also* disabled while a plugin panel is open: the live-
@@ -489,9 +501,10 @@ void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, doubl
 
     // Scroll position is absolute, and a channel plane has a different total
     // sample count than the interleaved buffer (width*height vs.
-    // width*height*3) — convert to a fraction of the primary view's own
+    // width*height*channels) — convert to a fraction of the primary view's own
     // sample count, then re-apply that fraction to every view's own count, so
-    // all 4 stay showing the same proportional field of view.
+    // all of them (the plain waveform plus every channel lane) stay showing
+    // the same proportional field of view.
     auto& primary = primaryWaveformView();
     const int primarySamples = primary.getNumSamples();
     const double fraction = primarySamples > 0 ? newRangeStart / (double) primarySamples : 0.0;

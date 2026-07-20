@@ -15,7 +15,8 @@ public:
                      juce::Label& waveformZoomLabelIn, juce::Slider& horizontalZoomSliderIn,
                      juce::Component& horizontalScrollBarIn,
                      juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
-                     juce::Component& blueWaveformIn, juce::Button& splitToggleIn,
+                     juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
+                     juce::Button& splitToggleIn,
                      juce::Label& sampleModeLabelIn, juce::ComboBox& sampleModeComboIn,
                      juce::Component& busySpinnerIn)
         : imagePreviewRef(imagePreviewIn), statusLabelRef(statusLabelIn),
@@ -23,7 +24,7 @@ public:
           busySpinnerRef(busySpinnerIn),
           waveformSection(waveformViewIn, waveformZoomSliderIn, waveformZoomLabelIn,
                           horizontalZoomSliderIn, horizontalScrollBarIn,
-                          redWaveformIn, greenWaveformIn, blueWaveformIn, splitToggleIn)
+                          redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn, splitToggleIn)
     {
         addAndMakeVisible(imagePreviewRef);
         addAndMakeVisible(waveformSection);

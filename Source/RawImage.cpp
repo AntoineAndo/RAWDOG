@@ -83,7 +83,12 @@ std::unique_ptr<RawImage> RawImage::loadFromFile(const juce::File& file, juce::S
     if (probe.getSize() >= 2 && probe[0] == 'P' && (probe[1] == '5' || probe[1] == '6'))
         return loadPnm(file, errorMessage);
 
-    errorMessage = "Unrecognised format — only 24-bit uncompressed BMP and raw PNM (P5/P6) are supported.";
+    static const uint8_t pngSignature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+
+    if (probe.getSize() >= 8 && std::memcmp(probe.getData(), pngSignature, 8) == 0)
+        return loadPng(file, errorMessage);
+
+    errorMessage = "Unrecognised format — only 24-bit uncompressed BMP, raw PNM (P5/P6), and PNG are supported.";
     return nullptr;
 }
 
@@ -459,6 +464,87 @@ std::unique_ptr<RawImage> RawImage::loadPnm(const juce::File& file, juce::String
     return result;
 }
 
+std::unique_ptr<RawImage> RawImage::loadPng(const juce::File& file, juce::String& errorMessage)
+{
+    juce::MemoryBlock fileBytes;
+    file.loadFileAsData(fileBytes);
+
+    // IHDR is always the very first chunk, at a fixed offset right after the
+    // 8-byte signature (8 sig + 4 chunk length + 4 "IHDR" + 4 width + 4
+    // height + 1 bit depth = colour type at byte 25) -- reading it directly
+    // is the same "simple fixed-offset field, no general chunk-walking"
+    // approach the BMP/PNM loaders already use. This is read from the file
+    // itself rather than trusted from the decoded juce::Image below:
+    // Image::hasAlphaChannel() can't be used for this, because
+    // CoreGraphicsImageType silently upgrades every decoded image to ARGB on
+    // macOS regardless of the source's real alpha (see
+    // toJuceImageFromBytes()'s doc comment for the same quirk elsewhere in
+    // this class) -- it would report "has alpha" even for a plain RGB PNG.
+    if (fileBytes.getSize() < 26)
+    {
+        errorMessage = "PNG file too small to contain a valid header.";
+        return nullptr;
+    }
+
+    const auto* fileHeader = static_cast<const uint8_t*>(fileBytes.getData());
+    const uint8_t colourType = fileHeader[25];
+    const bool hasAlpha = (colourType == 4 || colourType == 6); // 4 = grayscale+alpha, 6 = RGBA
+
+    juce::Image image = juce::ImageFileFormat::loadFrom(file);
+
+    if (! image.isValid())
+    {
+        errorMessage = "Could not decode PNG file.";
+        return nullptr;
+    }
+
+    const int width = image.getWidth();
+    const int height = image.getHeight();
+
+    if (width <= 0 || height <= 0 || width > maxDimension || height > maxDimension)
+    {
+        errorMessage = "PNG dimensions out of supported range.";
+        return nullptr;
+    }
+
+    const int channels = hasAlpha ? 4 : 3;
+
+    juce::MemoryBlock outPixels;
+    outPixels.setSize((size_t) width * (size_t) height * (size_t) channels, false);
+    auto* const dst = static_cast<uint8_t*>(outPixels.getData());
+
+    const juce::Image::BitmapData bitmap(image, juce::Image::BitmapData::readOnly);
+
+    for (int y = 0; y < height; ++y)
+    {
+        uint8_t* const dstRow = dst + (size_t) y * (size_t) width * (size_t) channels;
+
+        for (int x = 0; x < width; ++x)
+        {
+            const auto colour = bitmap.getPixelColour(x, y);
+            uint8_t* const p = dstRow + (size_t) x * (size_t) channels;
+
+            p[0] = colour.getRed();
+            p[1] = colour.getGreen();
+            p[2] = colour.getBlue();
+
+            if (hasAlpha)
+                p[3] = colour.getAlpha();
+        }
+    }
+
+    auto result = std::make_unique<RawImage>();
+    result->format = Format::png;
+    result->width = width;
+    result->height = height;
+    result->channels = channels;
+    result->rowStride = width * channels;
+    result->bottomUp = false; // decoded top-down, like PNM -- headerBytes stays empty, nothing to derive orientation from
+    result->pixelBytes = std::move(outPixels);
+
+    return result;
+}
+
 RawImage::BmpHeaderFields RawImage::getBmpHeaderFields() const
 {
     BmpHeaderFields fields;
@@ -635,7 +721,9 @@ void RawImage::setPixelBytes(juce::MemoryBlock newPixelBytes)
 
 int RawImage::channelByteOffset(Format format, Channel channel)
 {
-    // BMP stores pixels as BGR; PNM P6 stores RGB.
+    // BMP stores pixels as BGR; PNM P6 and PNG store RGB(A). BMP's alpha
+    // case is unreachable in practice -- the loader always collapses 32-bit
+    // BMP down to 3 channels -- but is given a definite value regardless.
     if (format == Format::bmp)
     {
         switch (channel)
@@ -643,6 +731,7 @@ int RawImage::channelByteOffset(Format format, Channel channel)
             case Channel::blue:  return 0;
             case Channel::green: return 1;
             case Channel::red:   return 2;
+            case Channel::alpha: return 3;
         }
     }
     else
@@ -652,6 +741,7 @@ int RawImage::channelByteOffset(Format format, Channel channel)
             case Channel::red:   return 0;
             case Channel::green: return 1;
             case Channel::blue:  return 2;
+            case Channel::alpha: return 3;
         }
     }
 
@@ -672,12 +762,18 @@ void RawImage::ensurePlanesUpToDate() const
         return;
     }
 
-    for (auto& plane : channelPlanes)
-        plane.setSize((size_t) width * (size_t) height, false);
+    // channels is 3 (RGB) or 4 (RGBA) whenever hasChannelPlanes() is true --
+    // only that many planes are actually populated; any plane beyond that
+    // (the alpha plane, for a 3-channel image) is cleared instead.
+    for (int c = 0; c < channels; ++c)
+        channelPlanes[c].setSize((size_t) width * (size_t) height, false);
+    for (int c = channels; c < 4; ++c)
+        channelPlanes[c].reset();
 
-    uint8_t* planePtrs[3] = { static_cast<uint8_t*>(channelPlanes[0].getData()),
+    uint8_t* planePtrs[4] = { static_cast<uint8_t*>(channelPlanes[0].getData()),
                               static_cast<uint8_t*>(channelPlanes[1].getData()),
-                              static_cast<uint8_t*>(channelPlanes[2].getData()) };
+                              static_cast<uint8_t*>(channelPlanes[2].getData()),
+                              channels == 4 ? static_cast<uint8_t*>(channelPlanes[3].getData()) : nullptr };
 
     const auto* px = static_cast<const uint8_t*>(pixelBytes.getData());
     const size_t available = pixelBytes.getSize();
@@ -692,7 +788,7 @@ void RawImage::ensurePlanesUpToDate() const
             const size_t byteOffset = rowOffset + (size_t) x * (size_t) channels;
             const size_t planeIndex = (size_t) y * (size_t) width + (size_t) x;
 
-            for (int c = 0; c < 3; ++c)
+            for (int c = 0; c < channels; ++c)
             {
                 const size_t srcOffset = byteOffset + (size_t) channelByteOffset(format, (Channel) c);
                 planePtrs[c][planeIndex] = srcOffset < available ? px[srcOffset] : 0;
@@ -849,17 +945,18 @@ bool RawImage::writeToPngFile(const juce::File& file) const
 }
 
 void RawImage::readRawRgbAt(const uint8_t* px, size_t available, size_t byteOffset,
-                             juce::uint8& r, juce::uint8& g, juce::uint8& b) const
+                             juce::uint8& r, juce::uint8& g, juce::uint8& b, juce::uint8& a) const
 {
     r = g = b = 0;
+    a = 255; // opaque default -- overwritten below only for a real 4-channel (RGBA PNG) image
 
     if (byteOffset + (size_t) channels <= available)
     {
-        if (channels == 3)
+        if (channels == 3 || channels == 4)
         {
             if (format == Format::bmp)
             {
-                // BMP stores pixels as BGR.
+                // BMP stores pixels as BGR (never 4-channel in this app -- see channelByteOffset()).
                 b = px[byteOffset + 0];
                 g = px[byteOffset + 1];
                 r = px[byteOffset + 2];
@@ -869,6 +966,9 @@ void RawImage::readRawRgbAt(const uint8_t* px, size_t available, size_t byteOffs
                 r = px[byteOffset + 0];
                 g = px[byteOffset + 1];
                 b = px[byteOffset + 2];
+
+                if (channels == 4)
+                    a = px[byteOffset + 3];
             }
         }
         else
@@ -891,9 +991,19 @@ void RawImage::writePixelRows(const juce::Image::BitmapData& bitmap, const uint8
         for (int x = 0; x < width; ++x)
         {
             const size_t byteOffset = rowOffset + (size_t) x * (size_t) channels;
-            juce::uint8 r, g, b;
-            readRawRgbAt(px, available, byteOffset, r, g, b);
-            dest[x].setARGB((juce::uint8) 0xff, r, g, b); // this image data is always fully opaque
+            juce::uint8 r, g, b, a;
+            readRawRgbAt(px, available, byteOffset, r, g, b, a);
+            dest[x].setARGB(a, r, g, b); // a is always 255 unless this is a real RGBA (alpha PNG) source
+
+            // PixelARGB is JUCE's *premultiplied* internal storage (see
+            // juce_PixelFormats.h) -- setARGB() above is a raw setter that just
+            // stores whatever's given verbatim, so without this, every consumer
+            // that assumes premultiplied storage (PNGImageFormat's writer,
+            // Graphics::drawImage's compositing) would double-divide/composite
+            // wrong for any translucent pixel. A no-op for PixelRGB (alpha is
+            // always 0xff there), so unconditional here is correct for both
+            // template instantiations.
+            dest[x].premultiply();
         }
     }
 }
@@ -922,7 +1032,7 @@ void RawImage::ensurePlainImageUpToDate() const
 
 juce::Image RawImage::toJuceImageFromBytes(const juce::MemoryBlock& bytesToRender) const
 {
-    juce::Image image(juce::Image::RGB, width, height, true);
+    juce::Image image(hasAlphaChannel() ? juce::Image::ARGB : juce::Image::RGB, width, height, true);
     juce::Image::BitmapData bitmap(image, juce::Image::BitmapData::writeOnly);
 
     const auto* px = static_cast<const uint8_t*>(bytesToRender.getData());

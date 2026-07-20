@@ -117,14 +117,17 @@ private:
     void restoreSelectionScope(std::optional<RawImage::Channel> channel, juce::Range<int> range);
 
     // Enables/disables split-channel display. Entering split mode lazily
-    // (re)computes the 3 channel planes (cheap if already up to date, per
-    // RawImage's own dirty-flag caching) and populates all 3 lanes; leaving
-    // it clears the per-channel selection-tracking state. Does not touch
-    // pixelBytes/headerBytes — purely a view/selection-tracking concern.
+    // (re)computes the channel planes (cheap if already up to date, per
+    // RawImage's own dirty-flag caching) and populates the 3 or 4 lanes that
+    // apply; leaving it clears the per-channel selection-tracking state.
+    // Does not touch pixelBytes/headerBytes — purely a view/selection-
+    // tracking concern.
     void setSplitMode(bool enabled);
 
-    // Repopulates all 3 channel lanes' buffers from workingImage's current
-    // per-channel planes. No-op if there's no image or it isn't a 3-channel one.
+    // Repopulates the channel lanes' buffers from workingImage's current
+    // per-channel planes, and shows/hides the 4th (alpha) lane to match
+    // whether the loaded image actually has an alpha channel. No-op if
+    // there's no image or it isn't a 3/4-channel one.
     void refreshChannelWaveforms(bool resetView);
 
     // Whichever waveform view currently drives the shared horizontal
@@ -162,7 +165,7 @@ private:
 
     ZoomableImageView imagePreview;
     WaveformView waveformView;
-    std::array<WaveformView, 3> channelWaveformViews; // indexed by (int) RawImage::Channel
+    std::array<WaveformView, 4> channelWaveformViews; // indexed by (int) RawImage::Channel; lane 3 (alpha) is only ever shown for a loaded PNG with a real alpha channel
     juce::TextButton splitModeToggle { "Split Channels" };
     juce::Label sampleModeLabel { {}, "Sample Mode:" };
     juce::ComboBox sampleModeCombo;
@@ -203,6 +206,7 @@ private:
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, waveformZoomSlider,
                                     waveformZoomLabel, horizontalZoomSlider, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
+                                    channelWaveformViews[3],
                                     splitModeToggle, sampleModeLabel, sampleModeCombo, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
@@ -291,7 +295,7 @@ private:
     // endLivePreviewSession() since workingImage->pixelBytes may change
     // (Apply commits new bytes) once the session ends.
     std::shared_ptr<const juce::MemoryBlock> cachedWholeBufferSource;
-    std::array<std::shared_ptr<const juce::MemoryBlock>, 3> cachedChannelSource;
+    std::array<std::shared_ptr<const juce::MemoryBlock>, 4> cachedChannelSource;
 
     // Tracks which channel lane (if any) currently owns the live selection
     // while split mode is on — only one lane has an active selection at a

@@ -19,11 +19,12 @@ public:
                          juce::Label& waveformZoomLabelIn, juce::Slider& horizontalZoomSliderIn,
                          juce::Component& horizontalScrollBarIn,
                          juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
-                         juce::Component& blueWaveformIn, juce::Button& splitToggleIn)
+                         juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
+                         juce::Button& splitToggleIn)
         : waveformViewRef(waveformViewIn), waveformZoomSliderRef(waveformZoomSliderIn),
           waveformZoomLabelRef(waveformZoomLabelIn), horizontalZoomSliderRef(horizontalZoomSliderIn),
           horizontalScrollBarRef(horizontalScrollBarIn),
-          splitPanel(redWaveformIn, greenWaveformIn, blueWaveformIn), splitToggleRef(splitToggleIn)
+          splitPanel(redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn), splitToggleRef(splitToggleIn)
     {
         addAndMakeVisible(waveformViewRef);
         addAndMakeVisible(splitPanel);
@@ -44,6 +45,11 @@ public:
         const bool split = splitToggleRef.getToggleState();
         waveformViewRef.setVisible(! split);
         splitPanel.setVisible(split);
+
+        // Explicit, not just relying on setBounds() below noticing a size
+        // change: which lanes are visible inside splitPanel (e.g. the alpha
+        // lane) can change without splitPanel's own overall bounds changing.
+        splitPanel.resized();
         resized();
     }
 

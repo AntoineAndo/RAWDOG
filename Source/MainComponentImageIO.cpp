@@ -69,8 +69,8 @@ void MainComponent::loadImageClicked()
     if (imageLoadInProgress)
         return;
 
-    fileChooser = std::make_unique<juce::FileChooser>("Load image (24-bit BMP, raw PNM, or RAF/DNG camera raw)",
-                                                        juce::File(), "*.bmp;*.pnm;*.ppm;*.pgm;*.dng;*.raf");
+    fileChooser = std::make_unique<juce::FileChooser>("Load image (24-bit BMP, raw PNM, PNG, or RAF/DNG camera raw)",
+                                                        juce::File(), "*.bmp;*.pnm;*.ppm;*.pgm;*.png;*.dng;*.raf");
 
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
         [this](const juce::FileChooser& fc)
@@ -217,7 +217,8 @@ void MainComponent::updatePreview(bool resetView)
 
 void MainComponent::updateHighlightOverlay(const RawImage& image, const SelectionScope& scope)
 {
-    static const juce::Colour channelColours[3] = { juce::Colours::red, juce::Colours::green, juce::Colours::blue };
+    static const juce::Colour channelColours[4] = { juce::Colours::red, juce::Colours::green,
+                                                      juce::Colours::blue, juce::Colours::white };
     const auto colour = scope.channel.has_value() ? channelColours[(int) *scope.channel] : juce::Colours::yellow;
 
     const auto overlay = scope.channel.has_value()

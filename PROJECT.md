@@ -52,18 +52,48 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
 
 ### The core databending pipeline
 
-1. **`RawImage`** (`RawImage.h/.cpp`) — loads/saves **24-bit uncompressed BMP** and
-   **raw PNM (P5/P6)**. On load it splits the file into two `juce::MemoryBlock`s:
-   `headerBytes` and `pixelBytes` (the only thing a plugin is ever allowed to touch).
-   BMP parsing follows `bfOffBits` from the file header rather than assuming a fixed
-   54 bytes, so it's correct even with unusual DIB header variants. `toJuceImage()`
-   renders the current `pixelBytes` back into a displayable `juce::Image`, handling
-   BMP's bottom-up-row/BGR-order quirks vs PNM's top-down/RGB. It always renders
-   plain — the selection highlight is drawn separately, as a line overlay by the
-   viewing component (see "Selection → image highlight" below).
+1. **`RawImage`** (`RawImage.h/.cpp`) — loads/saves **24-bit uncompressed BMP**,
+   **raw PNM (P5/P6)**, and loads **PNG** (any depth/colour type JUCE's own decoder
+   handles, normalised to 8-bit RGB or RGBA). On load it splits the file into two
+   `juce::MemoryBlock`s: `headerBytes` and `pixelBytes` (the only thing a plugin is
+   ever allowed to touch). BMP parsing follows `bfOffBits` from the file header
+   rather than assuming a fixed 54 bytes, so it's correct even with unusual DIB
+   header variants. `toJuceImage()` renders the current `pixelBytes` back into a
+   displayable `juce::Image`, handling BMP's bottom-up-row/BGR-order quirks vs
+   PNM/PNG's top-down/RGB(A). It always renders plain — the selection highlight is
+   drawn separately, as a line overlay by the viewing component (see "Selection →
+   image highlight" below).
    - TIFF is **not** supported — deliberately deferred (see Deferred Work). BMP/PNM
      were chosen because their headers are simple/fixed-size, so "protected region"
      is trivial to define correctly, unlike TIFF's IFD/strip-offset structure.
+   - **PNG loading** (`RawImage::loadPng()`) decodes via `juce::ImageFileFormat`
+     (the same codec `writeToPngFile()` already used for export) and re-packs the
+     result into a fresh interleaved RGB or RGBA buffer — `headerBytes` stays empty,
+     since PNG's chunked/DEFLATE-compressed layout has no simple fixed-offset
+     "protected region" the way BMP/PNM have (same reasoning as the TIFF deferral
+     above). Whether the source actually has an alpha channel is read directly from
+     the file's IHDR colour-type byte (a fixed offset, not general chunk-walking) —
+     deliberately not from the decoded `juce::Image`'s own `hasAlphaChannel()`, which
+     macOS's `CoreGraphicsImageType` silently reports as true for every decoded
+     image regardless of the source. A loaded PNG with real alpha is `Channel::alpha`,
+     a 4th channel plane alongside red/green/blue — `RawImage::hasChannelPlanes()`
+     now covers 3- *or* 4-channel images, and `hasAlphaChannel()` is the single
+     source of truth the UI gates the 4th waveform lane on (hidden for every other
+     format/case) — it deliberately also checks `getFormat() == Format::png`, not
+     just `channels == 4`, since a BMP header-edited to `biBitCount == 32`
+     (`validateBmpHeaderFields()` only warns on this, never blocks it) also
+     re-derives `channels` to 4 without that being real alpha. `writePixelRows()`
+     (behind `toJuceImage()`/export) must premultiply before writing into
+     `juce::PixelARGB` — that class's storage is documented as premultiplied, and
+     its `setARGB()` is a raw setter that does no premultiply math itself, so
+     writing straight RGBA through it un-premultiplies a second time everywhere
+     downstream (PNG export, on-screen compositing) without the explicit
+     `premultiply()` call after `setARGB()`. Known, accepted precision tradeoff
+     (distinct from the premultiply bug above, which is a correctness fix, not a
+     tradeoff): an RGBA source's colour channels (not alpha itself) round-trip
+     through `juce::Image::ARGB`'s premultiplied 8-bit storage on *load*, which
+     loses up to ±1-2/255 at low alpha — not worth a hand-rolled non-premultiplied
+     PNG scanline decoder for this.
    - **Fujifilm RAF and Adobe DNG camera-raw files *are* supported — but not by
      `RawImage` itself.** `RawCameraConverter.h/.cpp` sniffs for these formats
      (RAF's literal `"FUJIFILMCCD-RAW"` magic; DNG's/any TIFF's `II*\0`/`MM\0*`
@@ -115,28 +145,30 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
    - **Per-channel plane API** (`Channel` enum, `hasChannelPlanes()`,
      `getChannelPlane()`, `applyChannelBytes()`, `previewWithChannelBytes()`,
      `setPixelBytes()`; UI in `WaveformSplitPanel.h` + the `WaveformSectionPanel`/
-     `RightColumnPanel` split-toggle extension). Lets a 3-channel chunky image (BMP
-     24-bit or PNM P6 — `channels == 3`) be viewed and edited **per color channel**
-     instead of only as one interleaved byte stream. `getChannelPlane(Channel)`
-     lazily deinterleaves `pixelBytes` into 3 one-byte-per-pixel buffers in visual
-     top-down row-major order (index `i` == pixel `(i % width, i / width)` —
-     deliberately *not* `pixelBytes`' own possibly-bottom-up/padded row order, so a
-     plane's layout doesn't depend on `bottomUp`), cached and invalidated via a
-     `planesDirty` flag rather than recomputed on every edit — deinterleaving a
-     1080p image is a few-ms linear pass, cheap once but wasteful if paid on every
-     edit whether or not split view is even open. `applyChannelBytes()` re-interleaves
-     one edited channel back into `pixelBytes` and updates *only that channel's* cache
-     entry, leaving the other two valid — the entire point of the lazy design.
-     `setPixelBytes()` is a new explicit setter replacing a direct
-     `pixelBytes = ...` field assignment that used to exist in
+     `RightColumnPanel` split-toggle extension). Lets a 3- or 4-channel chunky image
+     (BMP 24-bit, PNM P6, or PNG — `channels == 3 || channels == 4`) be viewed and
+     edited **per color channel** instead of only as one interleaved byte stream.
+     `getChannelPlane(Channel)` lazily deinterleaves `pixelBytes` into up to 4
+     one-byte-per-pixel buffers in visual top-down row-major order (index `i` ==
+     pixel `(i % width, i / width)` — deliberately *not* `pixelBytes`' own possibly-
+     bottom-up/padded row order, so a plane's layout doesn't depend on `bottomUp`),
+     cached and invalidated via a `planesDirty` flag rather than recomputed on every
+     edit — deinterleaving a 1080p image is a few-ms linear pass, cheap once but
+     wasteful if paid on every edit whether or not split view is even open.
+     `applyChannelBytes()` re-interleaves one edited channel back into `pixelBytes`
+     and updates *only that channel's* cache entry, leaving the others valid — the
+     entire point of the lazy design. `setPixelBytes()` is a new explicit setter
+     replacing a direct `pixelBytes = ...` field assignment that used to exist in
      `endLivePreviewSession()`, so plane-cache invalidation can never be silently
      bypassed. Editing is **fully per-channel**: a selection on one channel's
      waveform lane can drive Apply, processing just that channel's plane through the
      plugin and re-interleaving the result — see `MainComponent::SelectionScope`/
      `getCurrentSelectionScope()` below. The image-preview highlight outline uses a
      second `toJuceImage()`/`toJuceImageFromBytes()` overload for this case, colored
-     to match the active channel (red/green/blue) instead of the fixed yellow used
-     for a whole-buffer/interleaved selection.
+     to match the active channel (red/green/blue/white-for-alpha) instead of the
+     fixed yellow used for a whole-buffer/interleaved selection. The 4th (alpha)
+     lane only ever appears for a loaded PNG with a real alpha channel
+     (`hasAlphaChannel()`) — hidden, not just empty, for every other case.
    - **Non-24bpp BMP support via load-time conversion** (`loadBmp()`'s
      `isPalette`/`is32Rgb`/`is32Bitfields` paths). Rather than teaching every
      downstream subsystem (waveform, channel planes, header editing, the apply
