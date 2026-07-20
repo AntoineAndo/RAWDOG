@@ -1,4 +1,5 @@
 #include "ZoomableImageView.h"
+#include "PixelBenderLookAndFeel.h"
 
 void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
 {
@@ -42,8 +43,9 @@ void ZoomableImageView::paint(juce::Graphics& g)
 {
     if (! image.isValid())
     {
-        g.fillAll(juce::Colours::black);
-        g.setColour(juce::Colours::grey);
+        const auto& palette = PixelBenderLookAndFeel::Palette::get();
+        g.fillAll(palette.background);
+        g.setColour(palette.textSecondary);
         g.drawText("Click to load an image", getLocalBounds(), juce::Justification::centred);
         return;
     }
@@ -81,7 +83,7 @@ void ZoomableImageView::ensureCachedRenderUpToDate()
         cachedRender = juce::Image(juce::Image::RGB, w, h, false);
 
     juce::Graphics cg(cachedRender);
-    cg.fillAll(juce::Colours::black); // letterboxing when the image doesn't fill the viewport
+    cg.fillAll(PixelBenderLookAndFeel::Palette::get().background); // letterboxing when the image doesn't fill the viewport
 
     // Nearest-neighbour while a live-preview session is delivering rapid
     // refreshes -- see setFastResampling()'s doc comment. On macOS this maps

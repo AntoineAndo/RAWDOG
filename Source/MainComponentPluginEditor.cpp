@@ -300,5 +300,5 @@ void MainComponent::cancelEditorClicked()
     endLivePreviewSession(false); // false = discard, do not commit to workingImage->pixelBytes
     updatePreview();
     updateWaveform();
-    setStatus("Cancelled — no changes applied.");
+    setStatus("Cancelled - no changes applied.");
 }

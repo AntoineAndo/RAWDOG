@@ -13,7 +13,7 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
 
     if (topLevelMenuIndex == 0)
     {
-        menu.addItem(loadImageMenuItem, "Load Image...", ! panelOpen);
+        callbacks.populateFileMenuLoadImageItem(menu);
         menu.addItem(editHeaderMenuItem, "Edit Header...", callbacks.canEditHeader() && ! panelOpen);
         // Also gated on ! panelOpen: while a plugin's live-preview session is
         // active, RawImage's render caches (toJuceImage()'s cachedPlainImage)
@@ -22,7 +22,7 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
         // sensible gated this way anyway: it would otherwise export the
         // last-committed image, not the current unapplied preview.
         menu.addItem(exportImageMenuItem, "Export Image...", callbacks.hasWorkingImage() && ! panelOpen);
-        menu.addItem(resetMenuItem, "Reset to Original", callbacks.hasOriginalImage() && ! panelOpen);
+        callbacks.populateFileMenuResetItem(menu);
         menu.addSeparator();
         menu.addItem(rescanPluginsMenuItem, "Rescan Plugins", ! callbacks.isScanning() && ! panelOpen);
     }
@@ -38,9 +38,7 @@ void MainMenuModel::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
 {
     switch (menuItemID)
     {
-        case loadImageMenuItem:      callbacks.onLoadImage(); break;
         case exportImageMenuItem:    callbacks.onExportImage(); break;
-        case resetMenuItem:          callbacks.onReset(); break;
         case rescanPluginsMenuItem:  callbacks.onRescan(); break;
         case editHeaderMenuItem:     callbacks.onEditHeader(); break;
         default: break;

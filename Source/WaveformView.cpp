@@ -1,4 +1,5 @@
 #include "WaveformView.h"
+#include "PixelBenderLookAndFeel.h"
 
 void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView,
                              std::optional<WaveformPeaks::Partial> precomputedPeaks)
@@ -190,14 +191,15 @@ void WaveformView::paint(juce::Graphics& g)
 
     if (hasSelection)
     {
+        const auto& palette = PixelBenderLookAndFeel::Palette::get();
         const float height = (float) getHeight();
         const float x1 = (float) sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
         const float x2 = (float) sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
         auto selectionRect = juce::Rectangle<float>(x1, 0.0f, x2 - x1, height);
 
-        g.setColour(juce::Colours::yellow.withAlpha(0.25f));
+        g.setColour(palette.gold.withAlpha(0.22f));
         g.fillRect(selectionRect);
-        g.setColour(juce::Colours::yellow);
+        g.setColour(palette.gold);
         g.drawRect(selectionRect, 1.0f);
 
         // Small grip marks at each edge so the resize handles are visually
@@ -223,8 +225,10 @@ void WaveformView::ensureCachedTraceUpToDate()
     if (cachedTrace.getWidth() != w || cachedTrace.getHeight() != h)
         cachedTrace = juce::Image(juce::Image::RGB, w, h, false);
 
+    const auto& palette = PixelBenderLookAndFeel::Palette::get();
+
     juce::Graphics cg(cachedTrace);
-    cg.fillAll(juce::Colours::black);
+    cg.fillAll(palette.background);
 
     const int width = w;
     const int height = h;
@@ -245,7 +249,7 @@ void WaveformView::ensureCachedTraceUpToDate()
     {
         const auto* samples = waveformData.getReadPointer(0);
 
-        cg.setColour(juce::Colours::limegreen);
+        cg.setColour(palette.waveform);
 
         for (int x = 0; x < width; ++x)
         {
@@ -264,8 +268,8 @@ void WaveformView::ensureCachedTraceUpToDate()
             // that channel is absent) and {0,0} for a column beyond the data.
             const auto mm = WaveformPeaks::columnMinMax(samples, numSamples, startSample, endSample, peakMins, peakMaxs);
 
-            const float minV = juce::jlimit(loClamp, hiClamp, mm.minV * verticalZoom);
-            const float maxV = juce::jlimit(loClamp, hiClamp, mm.maxV * verticalZoom);
+            const float minV = juce::jlimit(loClamp, hiClamp, mm.minV);
+            const float maxV = juce::jlimit(loClamp, hiClamp, mm.maxV);
 
             const float y1 = baseline - maxV * scale;
             const float y2 = juce::jmax(baseline - minV * scale, y1 + 1.0f);
@@ -274,7 +278,7 @@ void WaveformView::ensureCachedTraceUpToDate()
     }
     else
     {
-        cg.setColour(juce::Colours::grey);
+        cg.setColour(palette.textSecondary);
         cg.drawText("Load an image to see its waveform", cachedTrace.getBounds(), juce::Justification::centred);
     }
 
@@ -393,6 +397,44 @@ void WaveformView::mouseDrag(const juce::MouseEvent& e)
 void WaveformView::mouseUp(const juce::MouseEvent&)
 {
     dragMode = DragMode::none;
+}
+
+void WaveformView::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
+{
+    if (waveformData.getNumSamples() == 0 || viewLengthSamples <= 0)
+        return;
+
+    // wheel.deltaX is normalised to roughly [-1, 1] per gesture tick; scale by
+    // the current view width (not a fixed pixel constant) so pan speed feels
+    // consistent whether zoomed in or fully zoomed out.
+    constexpr float panFractionPerUnitDelta = 1.0f;
+    const int panSamples = (int) (wheel.deltaX * panFractionPerUnitDelta * (float) viewLengthSamples);
+    setViewStart(viewStartSample - panSamples);
+}
+
+void WaveformView::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+{
+    const int numSamples = waveformData.getNumSamples();
+    if (numSamples == 0 || viewLengthSamples <= 0)
+        return;
+
+    const int anchorSample = xToSample(e.x);
+    const double anchorFrac = (double) (anchorSample - viewStartSample) / (double) viewLengthSamples;
+
+    const int minVisible = juce::jmin(numSamples, 16);
+    const int newLength = juce::jlimit(minVisible, numSamples,
+                                        (int) (viewLengthSamples / juce::jmax(0.01f, scaleFactor)));
+
+    viewLengthSamples = newLength;
+    viewStartSample = juce::jlimit(0, juce::jmax(0, numSamples - viewLengthSamples),
+                                    anchorSample - (int) (anchorFrac * viewLengthSamples));
+
+    invalidateCachedTrace();
+
+    if (onViewChanged != nullptr)
+        onViewChanged();
+
+    repaint();
 }
 
 void WaveformView::mouseMove(const juce::MouseEvent& e)

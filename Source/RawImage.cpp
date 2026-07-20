@@ -93,7 +93,7 @@ std::unique_ptr<RawImage> RawImage::loadFromFile(const juce::File& file, juce::S
     if (probe.getSize() >= 2 && (uint8_t) probe[0] == 0xFF && (uint8_t) probe[1] == 0xD8)
         return loadJpeg(file, errorMessage);
 
-    errorMessage = "Unrecognised format — only 24-bit uncompressed BMP, raw PNM (P5/P6), PNG, and JPEG are supported.";
+    errorMessage = "Unrecognised format - only 24-bit uncompressed BMP, raw PNM (P5/P6), PNG, and JPEG are supported.";
     return nullptr;
 }
 

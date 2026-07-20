@@ -1,6 +1,8 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "GrippedResizerBar.h"
+#include "PixelBenderLookAndFeel.h"
 #include "WaveformSectionPanel.h"
 
 // Parents the image preview, a WaveformSectionPanel, and the status label.
@@ -11,8 +13,7 @@ class RightColumnPanel : public juce::Component
 {
 public:
     RightColumnPanel(juce::Component& imagePreviewIn, juce::Label& statusLabelIn,
-                     juce::Component& waveformViewIn, juce::Slider& waveformZoomSliderIn,
-                     juce::Label& waveformZoomLabelIn, juce::Slider& horizontalZoomSliderIn,
+                     juce::Component& waveformViewIn,
                      juce::Component& horizontalScrollBarIn,
                      juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
                      juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
@@ -22,8 +23,7 @@ public:
         : imagePreviewRef(imagePreviewIn), statusLabelRef(statusLabelIn),
           sampleModeLabelRef(sampleModeLabelIn), sampleModeComboRef(sampleModeComboIn),
           busySpinnerRef(busySpinnerIn),
-          waveformSection(waveformViewIn, waveformZoomSliderIn, waveformZoomLabelIn,
-                          horizontalZoomSliderIn, horizontalScrollBarIn,
+          waveformSection(waveformViewIn, horizontalScrollBarIn,
                           redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn, splitToggleIn)
     {
         addAndMakeVisible(imagePreviewRef);
@@ -40,11 +40,25 @@ public:
 
         layout.setItemLayout(0, 100, -1.0, -1.0); // preview: min 100px, fills remainder
         layout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
-        layout.setItemLayout(2, 80, -0.6, 140);    // waveform section: min 80px, max 60%, preferred 140px
+
+        // Waveform section: min 80px, preferred 140px, capped at a fixed 220px
+        // (not a proportional -0.6 max) -- the toolbar/waveform-lane rows above
+        // it are fixed-height, so dragging past a sane cap only inflated the
+        // horizontal-scrollbar strip at the bottom instead of the waveform
+        // itself, which read as a layout bug rather than "more room."
+        layout.setItemLayout(2, 80, 220, 140);
     }
 
     // Forwarded down to WaveformSectionPanel — see its own doc comment.
     void updateSplitVisibility() { waveformSection.updateSplitVisibility(); }
+
+    void paint(juce::Graphics& g) override
+    {
+        // Frames the image viewport so it reads as a bounded surface rather
+        // than bleeding straight into the panel background.
+        g.setColour(PixelBenderLookAndFeel::Palette::get().border);
+        g.drawRect(imagePreviewRef.getBounds().expanded(1), 1);
+    }
 
     void resized() override
     {
@@ -83,5 +97,5 @@ private:
     juce::Component& busySpinnerRef;
     WaveformSectionPanel waveformSection;
     juce::StretchableLayoutManager layout;
-    juce::StretchableLayoutResizerBar resizerBar { &layout, 1, false /*horizontal bar, dragged up/down*/ };
+    GrippedResizerBar resizerBar { &layout, 1, false /*horizontal bar, dragged up/down*/ };
 };

@@ -1,36 +1,32 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "PixelBenderLookAndFeel.h"
 #include "WaveformSplitPanel.h"
 
-// Ports today's fixed-pixel waveform sub-layout (waveform view + vertical zoom
-// column + horizontal zoom/scrollbar row) into its own container, unchanged.
+// Ports today's fixed-pixel waveform sub-layout (a filled toolbar strip, then
+// waveform view + horizontal scrollbar row) into its own container, unchanged.
 // Not a user-resizable split, just scoped to this panel's local coordinates.
-// Also lays out the split-channel toggle button and swaps which of the
-// interleaved waveformViewRef / the 3-lane splitPanel occupies the waveform
-// area, based on the toggle's current state — MainComponent owns the
-// splitModeToggle button and drives its .onClick/business logic directly
-// (same convention as the zoom sliders below); this class only reflects
-// whichever state the toggle is already in.
+// Also lays out the split-channel toggle button (in the toolbar strip) and
+// swaps which of the interleaved waveformViewRef / the 3-lane splitPanel
+// occupies the waveform area, based on the toggle's current state —
+// MainComponent owns the splitModeToggle button and drives its .onClick/
+// business logic directly; this class only reflects whichever state the
+// toggle is already in.
 class WaveformSectionPanel : public juce::Component
 {
 public:
-    WaveformSectionPanel(juce::Component& waveformViewIn, juce::Slider& waveformZoomSliderIn,
-                         juce::Label& waveformZoomLabelIn, juce::Slider& horizontalZoomSliderIn,
+    WaveformSectionPanel(juce::Component& waveformViewIn,
                          juce::Component& horizontalScrollBarIn,
                          juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
                          juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
                          juce::Button& splitToggleIn)
-        : waveformViewRef(waveformViewIn), waveformZoomSliderRef(waveformZoomSliderIn),
-          waveformZoomLabelRef(waveformZoomLabelIn), horizontalZoomSliderRef(horizontalZoomSliderIn),
+        : waveformViewRef(waveformViewIn),
           horizontalScrollBarRef(horizontalScrollBarIn),
           splitPanel(redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn), splitToggleRef(splitToggleIn)
     {
         addAndMakeVisible(waveformViewRef);
         addAndMakeVisible(splitPanel);
-        addAndMakeVisible(waveformZoomSliderRef);
-        addAndMakeVisible(waveformZoomLabelRef);
-        addAndMakeVisible(horizontalZoomSliderRef);
         addAndMakeVisible(horizontalScrollBarRef);
         addAndMakeVisible(splitToggleRef);
 
@@ -53,36 +49,42 @@ public:
         resized();
     }
 
+    void paint(juce::Graphics& g) override
+    {
+        g.setColour(PixelBenderLookAndFeel::Palette::get().surface);
+        g.fillRect(toolbarBounds);
+    }
+
     void resized() override
     {
         auto area = getLocalBounds();
 
-        auto waveformTop = area.removeFromTop(100);
+        // A real toolbar strip (filled background, proper padding) rather than
+        // the split toggle sitting bare at the waveform's top-right corner --
+        // same filled-header treatment PluginListModel uses for its vendor
+        // group headers, for visual consistency between the two panels.
+        toolbarBounds = area.removeFromTop(28);
         area.removeFromTop(4);
 
-        auto zoomArea = waveformTop.removeFromRight(40);
-        waveformTop.removeFromRight(8);
-        waveformZoomLabelRef.setBounds(zoomArea.removeFromTop(16));
-        waveformZoomSliderRef.setBounds(zoomArea);
+        auto toolbar = toolbarBounds.reduced(8, 2);
+        splitToggleRef.setBounds(toolbar.removeFromLeft(84));
 
-        auto toggleArea = waveformTop.removeFromRight(84);
-        waveformTop.removeFromRight(8);
-        splitToggleRef.setBounds(toggleArea.removeFromTop(24));
+        // Fixed-height scrollbar strip carved off the bottom first, so any
+        // extra height the panel gains (dragging the outer resizer bar taller)
+        // flows into the waveform view below instead of stretching the
+        // scrollbar into an oversized handle.
+        auto scrollbarArea = area.removeFromBottom(16);
+        area.removeFromBottom(4);
 
-        waveformViewRef.setBounds(waveformTop);
-        splitPanel.setBounds(waveformTop);
+        waveformViewRef.setBounds(area);
+        splitPanel.setBounds(area);
 
-        auto horizontalZoomArea = area.removeFromLeft(120);
-        area.removeFromLeft(8);
-        horizontalZoomSliderRef.setBounds(horizontalZoomArea);
-        horizontalScrollBarRef.setBounds(area);
+        horizontalScrollBarRef.setBounds(scrollbarArea);
     }
 
 private:
+    juce::Rectangle<int> toolbarBounds;
     juce::Component& waveformViewRef;
-    juce::Slider& waveformZoomSliderRef;
-    juce::Label& waveformZoomLabelRef;
-    juce::Slider& horizontalZoomSliderRef;
     juce::Component& horizontalScrollBarRef;
     WaveformSplitPanel splitPanel;
     juce::Button& splitToggleRef;

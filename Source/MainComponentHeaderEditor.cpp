@@ -102,7 +102,7 @@ void MainComponent::cancelHeaderEditClicked()
     endHeaderEditSession();
     updatePreview();
     updateWaveform();
-    setStatus("Cancelled — header unchanged.");
+    setStatus("Cancelled - header unchanged.");
 }
 
 void MainComponent::endHeaderEditSession()

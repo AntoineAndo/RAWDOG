@@ -22,29 +22,6 @@ MainComponent::MainComponent()
     addKeyListener(commandManager.getKeyMappings());
     setWantsKeyboardFocus(true);
 
-    waveformZoomSlider.setRange(1.0, 20.0, 0.1);
-    waveformZoomSlider.setValue(1.0);
-    waveformZoomSlider.onValueChange = [this]
-    {
-        const auto zoom = (float) waveformZoomSlider.getValue();
-        waveformView.setVerticalZoom(zoom);
-        for (auto& view : channelWaveformViews)
-            view.setVerticalZoom(zoom);
-    };
-    waveformZoomLabel.setJustificationType(juce::Justification::centred);
-    waveformZoomLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
-
-    horizontalZoomSlider.setRange(1.0, 200.0, 0.1);
-    horizontalZoomSlider.setSkewFactorFromMidPoint(10.0);
-    horizontalZoomSlider.setValue(1.0);
-    horizontalZoomSlider.onValueChange = [this]
-    {
-        const auto zoom = (float) horizontalZoomSlider.getValue();
-        waveformView.setHorizontalZoom(zoom);
-        for (auto& view : channelWaveformViews)
-            view.setHorizontalZoom(zoom);
-    };
-
     imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
 
     horizontalScrollBar.addListener(this);
@@ -384,6 +361,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
     commands.add(redoCommand);
     commands.add(cancelEditorCommand);
     commands.add(loadImageCommand);
+    commands.add(resetCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -417,16 +395,28 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             break;
 
         case loadImageCommand:
-            // Not shown in any menu -- File > Load Image... stays a plain
-            // (non-command) menu item; this is purely the keyboard-shortcut
-            // path. Same gating as that menu item's own enablement
-            // (isPanelOpen() in MainMenuModel::Callbacks) plus
+            // Backs the File > Load Image... menu item itself (see
+            // menuModel's populateFileMenuLoadImageItem callback) as well as
+            // the Cmd+O shortcut. Same gating as the item's previous plain-
+            // menu enablement (isPanelOpen() in MainMenuModel::Callbacks) plus
             // ! imageLoadInProgress, since loadImageClicked() itself would
             // otherwise just no-op mid-load anyway -- keeping it inactive here
             // is more honest than a shortcut that silently does nothing.
             result.setInfo("Load Image...", "Load a BMP, PNM, PNG, or JPEG image", "File", 0);
             result.addDefaultKeypress('o', juce::ModifierKeys::commandModifier);
             result.setActive(pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            break;
+
+        case resetCommand:
+            // Backs the File > Reset to Original menu item (see menuModel's
+            // populateFileMenuResetItem callback) as well as the Cmd+Shift+R
+            // shortcut. Same gating as the item's previous plain-menu
+            // enablement (hasOriginalImage() && isPanelOpen() in
+            // MainMenuModel::Callbacks) plus ! imageLoadInProgress.
+            result.setInfo("Reset to Original", "Discard all edits and revert to the originally loaded image", "File", 0);
+            result.addDefaultKeypress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            result.setActive(originalImage != nullptr && pluginEditorPanel == nullptr
+                              && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         default:
@@ -448,10 +438,48 @@ bool MainComponent::perform(const InvocationInfo& info)
                 cancelHeaderEditClicked();
             return true;
 
-        case loadImageCommand: loadImageClicked(); return true;
+        case loadImageCommand:
+            confirmDiscardChangesIfNeeded([this] { loadImageClicked(); });
+            return true;
+
+        case resetCommand:
+            confirmDiscardChangesIfNeeded([this] { resetClicked(); });
+            return true;
 
         default: return false;
     }
+}
+
+void MainComponent::confirmDiscardChangesIfNeeded(std::function<void()> proceed)
+{
+    if (undoStack.empty())
+    {
+        proceed();
+        return;
+    }
+
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+
+    auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+        juce::MessageBoxIconType::WarningIcon, "Unsaved Changes",
+        "You have unsaved changes to the current image. Continuing will discard them.",
+        "Discard Changes", "Cancel", this);
+
+    juce::AlertWindow::showAsync(options, [safeThis, proceed](int result)
+    {
+        // Empirically 1 for the first button passed to makeOptionsOkCancel()
+        // above ("Discard Changes") and 0 for the second ("Cancel") -- this
+        // matches the "(buttonIndex + 1) % numButtons" convention documented
+        // on the older AlertWindow::showOkCancelBox(), not a plain 0-based
+        // button index.
+        if (safeThis != nullptr && result == 1)
+            proceed();
+    });
+}
+
+void MainComponent::confirmQuit(std::function<void()> proceedToQuit)
+{
+    confirmDiscardChangesIfNeeded(std::move(proceedToQuit));
 }
 
 void MainComponent::updatePluginListEnablement()
@@ -469,9 +497,10 @@ void MainComponent::updatePluginListEnablement()
     leftColumn.setListControlsEnabled(listInteractive);
     pluginListBox.repaint();
 
-    waveformZoomSlider.setEnabled(hasImage);
-    horizontalZoomSlider.setEnabled(hasImage);
     horizontalScrollBar.setEnabled(hasImage);
+
+    horizontalScrollBar.setVisible(hasImage);
+    splitModeToggle.setVisible(hasImage);
 
     // The bipolar/unipolar dropdown is only relevant while the plugin editor
     // panel is open — this function already runs after every open/close.

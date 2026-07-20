@@ -53,10 +53,6 @@ public:
     // "no selection", matching the convention documented on getSelectionSampleRange().
     void setSelectionSampleRange(juce::Range<int> newSelection);
 
-    // Purely a display multiplier on amplitude — the underlying data is unaffected.
-    // Values are clipped to the component's height once scaled, like a vertical zoom.
-    void setVerticalZoom(float newZoom) { verticalZoom = newZoom; invalidateCachedTrace(); repaint(); }
-
     // Which byte<->float mapping the buffer currently passed to setBuffer()/
     // updateSampleRange() was converted with — purely a display concern here
     // (paint() draws bipolar samples centred, unipolar samples bottom-anchored
@@ -94,6 +90,13 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
 
+    // Trackpad gestures replacing the old horizontal-zoom slider: two-finger
+    // drag pans the view (delivered as wheel deltas, same convention
+    // ZoomableImageView::mouseWheelMove relies on), pinch zooms anchored on
+    // the sample under the cursor so that sample stays put on screen.
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
+
 private:
     int xToSample(int x) const;
     int sampleToX(int sample) const;
@@ -103,9 +106,9 @@ private:
     // used to rerun on every repaint -- including the ones mouseDrag() fires
     // on every raw mouse-move event during a plain selection drag, since that
     // never went through any debounce. The trace only actually depends on
-    // waveformData/viewStartSample/viewLengthSamples/verticalZoom/sampleMode,
-    // never the selection, so it's cached here and only regenerated when one
-    // of those actually changes -- see invalidateCachedTrace() call sites.
+    // waveformData/viewStartSample/viewLengthSamples/sampleMode, never the
+    // selection, so it's cached here and only regenerated when one of those
+    // actually changes -- see invalidateCachedTrace() call sites.
     void ensureCachedTraceUpToDate();
     void invalidateCachedTrace() { cachedTraceValid = false; }
     juce::Image cachedTrace;
@@ -118,11 +121,10 @@ private:
     // instead of rescanning O(viewLengthSamples) raw samples on every rebuild.
     // Depends ONLY on waveformData: kept in sync by setBuffer()/
     // updateSampleRange() and deliberately NOT touched by the display-only
-    // setters (setVerticalZoom/setSampleMode/setHorizontalZoom/setViewStart),
-    // which is precisely what makes zoom/pan/mode trace rebuilds cheap too.
+    // setters (setSampleMode/setHorizontalZoom/setViewStart), which is
+    // precisely what makes zoom/pan/mode trace rebuilds cheap too.
     std::vector<float> peakMins, peakMaxs;
 
-    float verticalZoom = 1.0f;
     SampleFormat::Mode sampleMode = SampleFormat::Mode::bipolar;
 
     int viewStartSample = 0;

@@ -156,7 +156,6 @@ void MainComponent::loadImageClicked()
                         // job already paid off-thread.
                         self->waveformView.setBuffer(std::move(result->waveformSamples), true,
                                                      std::move(result->waveformPeaks));
-                        self->horizontalZoomSlider.setValue(1.0, juce::dontSendNotification);
                         self->imagePreview.setImage(self->workingImage->toJuceImage(), true);
                         self->updateHighlightOverlay(*self->workingImage, self->getCurrentSelectionScope());
 
@@ -181,7 +180,7 @@ void MainComponent::exportImageClicked()
 {
     if (workingImage == nullptr)
     {
-        setStatus("Nothing to export — load an image first.");
+        setStatus("Nothing to export - load an image first.");
         return;
     }
 
@@ -245,7 +244,4 @@ void MainComponent::updateWaveform(bool resetView)
         return;
 
     waveformView.setBuffer(SampleFormat::bytesToBuffer(workingImage->getVisualOrderedPixelBytes(), workingImage->getSampleMode()), resetView);
-
-    if (resetView)
-        horizontalZoomSlider.setValue(1.0, juce::dontSendNotification);
 }

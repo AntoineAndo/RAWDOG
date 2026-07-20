@@ -15,10 +15,7 @@ public:
         std::function<bool()> isScanning;
         std::function<bool()> isPanelOpen;
         std::function<bool()> hasWorkingImage;
-        std::function<bool()> hasOriginalImage;
-        std::function<void()> onLoadImage;
         std::function<void()> onExportImage;
-        std::function<void()> onReset;
         std::function<void()> onRescan;
         std::function<void(juce::PopupMenu&)> populateEditMenu;
 
@@ -27,6 +24,20 @@ public:
         // field in the middle would silently scramble every later one.
         std::function<bool()> canEditHeader;
         std::function<void()> onEditHeader;
+
+        // Adds the "Load Image..." item as an ApplicationCommand item (via
+        // commandManager.addCommandItem), not a plain menu.addItem() --
+        // MainComponent owns loadImageCommand (entangled with its
+        // ApplicationCommandTarget machinery, same reason populateEditMenu
+        // above works this way for undo/redo), so this class doesn't know the
+        // command ID; it just gives MainComponent the menu to add it to. That's
+        // what makes the Cmd+O shortcut appear next to the item, matching
+        // Undo/Redo's own command-item treatment.
+        std::function<void(juce::PopupMenu&)> populateFileMenuLoadImageItem;
+
+        // Same command-item treatment as populateFileMenuLoadImageItem above,
+        // for "Reset to Original" / resetCommand (Cmd+Shift+R).
+        std::function<void(juce::PopupMenu&)> populateFileMenuResetItem;
     };
 
     explicit MainMenuModel(Callbacks callbacksIn) : callbacks(std::move(callbacksIn)) {}
@@ -38,9 +49,7 @@ public:
 private:
     enum MenuItemIDs
     {
-        loadImageMenuItem = 1,
-        exportImageMenuItem,
-        resetMenuItem,
+        exportImageMenuItem = 1,
         rescanPluginsMenuItem,
         editHeaderMenuItem
     };

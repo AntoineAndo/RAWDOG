@@ -5,6 +5,7 @@
 #include <optional>
 #include "BusySpinner.h"
 #include "FavouritePluginsStore.h"
+#include "GrippedResizerBar.h"
 #include "HeaderEditorPanel.h"
 #include "LeftColumnPanel.h"
 #include "LivePreviewWorker.h"
@@ -36,6 +37,13 @@ public:
     void getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result) override;
     bool perform(const InvocationInfo& info) override;
 
+    // Called by PixelBenderApplication before actually quitting (from
+    // MainWindow::closeButtonPressed()'s systemRequestedQuit(), or the app
+    // menu/Cmd+Q, both of which funnel through the same override) -- routes
+    // through the same discard-changes confirmation as Load Image/Reset
+    // rather than silently losing an unsaved edit on quit.
+    void confirmQuit(std::function<void()> proceedToQuit);
+
 private:
     enum CommandIDs
     {
@@ -45,9 +53,13 @@ private:
                             // headerEditorPanel is currently open, not shown
                             // in any menu (keyboard-only, mirroring each
                             // panel's own Cancel button)
-        loadImageCommand // Cmd+O — same action as File > Load Image..., which
-                          // stays a plain (non-command) menu item; this is
-                          // purely the keyboard-shortcut path.
+        loadImageCommand, // Cmd+O — File > Load Image... is itself this command
+                          // item (added via menu.addCommandItem() in
+                          // menuModel's populateFileMenuLoadImageItem callback
+                          // below), same treatment as undoCommand/redoCommand,
+                          // so the shortcut appears next to the menu item too.
+        resetCommand // Cmd+Shift+R — same command-item treatment as
+                     // loadImageCommand above, via populateFileMenuResetItem.
     };
 
     void refreshPluginList();
@@ -72,6 +84,13 @@ private:
     void sampleModeChanged();
     void syncScrollBarToView();
     void setStatus(const juce::String& text);
+
+    // Guards a destructive action (Load Image, Reset, Quit) behind the same
+    // generic discard-changes confirmation whenever undoStack is non-empty
+    // (i.e. the current image has edits since it was loaded/reset that would
+    // otherwise be silently lost) -- runs proceed() immediately if there's
+    // nothing to lose.
+    void confirmDiscardChangesIfNeeded(std::function<void()> proceed);
 
     // Lazily builds (and caches for the rest of this live-preview session --
     // see cachedWholeBufferSource/cachedChannelSource below) an immutable
@@ -161,9 +180,6 @@ private:
 
     PluginScanner scanner;
 
-    juce::Slider waveformZoomSlider { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
-    juce::Label waveformZoomLabel { {}, "Zoom" };
-    juce::Slider horizontalZoomSlider { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     juce::ScrollBar horizontalScrollBar { false };
 
     ZoomableImageView imagePreview;
@@ -187,10 +203,7 @@ private:
         [this] { return scanner.isScanning(); },
         [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr || imageLoadInProgress; },
         [this] { return workingImage != nullptr; },
-        [this] { return originalImage != nullptr; },
-        [this] { loadImageClicked(); },
         [this] { exportImageClicked(); },
-        [this] { resetClicked(); },
         [this] { refreshPluginList(); },
         [this](juce::PopupMenu& menu)
         {
@@ -198,7 +211,9 @@ private:
             menu.addCommandItem(&commandManager, redoCommand);
         },
         [this] { return workingImage != nullptr && workingImage->getFormat() == RawImage::Format::bmp; },
-        [this] { openHeaderEditorClicked(); }
+        [this] { openHeaderEditorClicked(); },
+        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, loadImageCommand); },
+        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, resetCommand); }
     } };
 
     // Parents the plugin list and (optionally) the currently-open PluginEditorPanel;
@@ -206,14 +221,13 @@ private:
     // Constructed after the raw controls above (declaration order == construction
     // order) so the references/pointers they parent are already valid.
     LeftColumnPanel leftColumn { pluginListBox };
-    RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, waveformZoomSlider,
-                                    waveformZoomLabel, horizontalZoomSlider, horizontalScrollBar,
+    RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
                                     channelWaveformViews[3],
                                     splitModeToggle, sampleModeLabel, sampleModeCombo, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
-    juce::StretchableLayoutResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
+    GrippedResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
 
     // Declared before currentPlugin so it destructs (and detaches) first —
     // member destruction order is the reverse of declaration order.
