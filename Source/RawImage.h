@@ -7,17 +7,18 @@
 
 // Loads/saves BMP (24-bit uncompressed) and PNM (raw P5/P6) files, and loads
 // PNG (any depth/colour type JUCE's own decoder handles, decoded to 8-bit
-// RGB or RGBA). pixelBytes is always available for databending. For BMP
-// specifically, headerBytes is no longer fully opaque: the 5 fields that
-// drive this app's own decoding (bfOffBits/biWidth/biHeight/biBitCount/
-// biCompression) can be user-edited via applyBmpHeaderFields() — see
-// HeaderEditorPanel. The other 11 documented BMP header fields are readable
-// via getBmpHeaderFields() but never written back. PNM's headerBytes remains
-// frozen verbatim source text, with no rebuild path. PNG has no fixed-offset
-// "protected region" the way BMP/PNM do (chunk-based, compressed), so a
-// loaded PNG's headerBytes is always empty — there is nothing to preserve or
-// edit, same rationale as the non-24bpp BMP expansion path discarding its
-// original header.
+// RGB or RGBA) and JPEG (always 3-channel RGB — JPEG has no alpha channel).
+// pixelBytes is always available for databending. For BMP specifically,
+// headerBytes is no longer fully opaque: the 5 fields that drive this app's
+// own decoding (bfOffBits/biWidth/biHeight/biBitCount/biCompression) can be
+// user-edited via applyBmpHeaderFields() — see HeaderEditorPanel. The other
+// 11 documented BMP header fields are readable via getBmpHeaderFields() but
+// never written back. PNM's headerBytes remains frozen verbatim source text,
+// with no rebuild path. PNG and JPEG have no fixed-offset "protected region"
+// the way BMP/PNM do (chunk/segment-based, compressed), so a loaded PNG or
+// JPEG's headerBytes is always empty — there is nothing to preserve or edit,
+// same rationale as the non-24bpp BMP expansion path discarding its original
+// header.
 class RawImage
 {
 public:
@@ -210,7 +211,7 @@ public:
     // in the interleaved buffer — for a channel-scoped waveform selection.
     std::optional<HighlightOverlay> computeChannelHighlightOverlay(juce::Range<int> highlightPlaneSampleRange) const;
 
-    enum class Format { bmp, pnmBinary, pnmGray, png };
+    enum class Format { bmp, pnmBinary, pnmGray, png, jpeg };
 
     // What format this image was actually loaded from (BMP vs PNM) — used
     // internally to interpret pixelBytes' layout (row order, channel order).
@@ -260,6 +261,17 @@ private:
     // ±1-2/255 at low alpha (round(c·a/255) then round(stored·255/a)) — not
     // worth a hand-rolled non-premultiplied PNG scanline decoder for this.
     static std::unique_ptr<RawImage> loadPng(const juce::File&, juce::String& errorMessage);
+
+    // Same decode-and-repack shape as loadPng(), minus the alpha-detection
+    // step — JPEG has no alpha channel at all, so this is always 3-channel
+    // RGB. Shares packImageToInterleavedBytes() with loadPng().
+    static std::unique_ptr<RawImage> loadJpeg(const juce::File&, juce::String& errorMessage);
+
+    // Shared by loadPng()/loadJpeg(): walks a decoded juce::Image pixel-by-
+    // pixel via BitmapData::getPixelColour() and packs it into a fresh
+    // width*height*channels interleaved RGB(A) buffer, top-down row-major.
+    // channels must be 3 or 4; a 4th (alpha) byte is only written when 4.
+    static juce::MemoryBlock packImageToInterleavedBytes(const juce::Image& image, int channels);
 
     static int64_t computeBmpRowStride(int32_t width, int channels);
 
@@ -328,7 +340,7 @@ private:
     void ensurePlainImageUpToDate() const;
 
     // Shared per-pixel colour-extraction logic behind writePixelRows() below
-    // (BMP's BGR vs PNM/PNG's RGB(A) byte order, or grayscale) — bounds-checked,
+    // (BMP's BGR vs PNM/PNG/JPEG's RGB(A) byte order, or grayscale) — bounds-checked,
     // defaults to black/opaque if byteOffset falls outside available. `a` is
     // only ever a real decoded value for a 4-channel (RGBA PNG) image; it's
     // set to 255 (opaque) for every other case.

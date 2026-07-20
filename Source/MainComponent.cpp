@@ -139,7 +139,7 @@ MainComponent::MainComponent()
         pluginListBox.repaint();
     };
 
-    setStatus("Load a BMP, PNM, or PNG image, then double-click a plugin to load it and tweak/apply.");
+    setStatus("Load a BMP, PNM, PNG, or JPEG image, then double-click a plugin to load it and tweak/apply.");
     updatePluginListEnablement();
 
     setSize(900, 700);
@@ -424,7 +424,7 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // ! imageLoadInProgress, since loadImageClicked() itself would
             // otherwise just no-op mid-load anyway -- keeping it inactive here
             // is more honest than a shortcut that silently does nothing.
-            result.setInfo("Load Image...", "Load a BMP, PNM, or PNG image", "File", 0);
+            result.setInfo("Load Image...", "Load a BMP, PNM, PNG, or JPEG image", "File", 0);
             result.addDefaultKeypress('o', juce::ModifierKeys::commandModifier);
             result.setActive(pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;

@@ -69,8 +69,8 @@ void MainComponent::loadImageClicked()
     if (imageLoadInProgress)
         return;
 
-    fileChooser = std::make_unique<juce::FileChooser>("Load image (24-bit BMP, raw PNM, PNG, or RAF/DNG camera raw)",
-                                                        juce::File(), "*.bmp;*.pnm;*.ppm;*.pgm;*.png;*.dng;*.raf");
+    fileChooser = std::make_unique<juce::FileChooser>("Load image (24-bit BMP, raw PNM, PNG, JPEG, or RAF/DNG camera raw)",
+                                                        juce::File(), "*.bmp;*.pnm;*.ppm;*.pgm;*.png;*.jpg;*.jpeg;*.dng;*.raf");
 
     fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
         [this](const juce::FileChooser& fc)

@@ -54,15 +54,16 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
 
 1. **`RawImage`** (`RawImage.h/.cpp`) — loads/saves **24-bit uncompressed BMP**,
    **raw PNM (P5/P6)**, and loads **PNG** (any depth/colour type JUCE's own decoder
-   handles, normalised to 8-bit RGB or RGBA). On load it splits the file into two
+   handles, normalised to 8-bit RGB or RGBA) and **JPEG** (always 3-channel RGB —
+   JPEG has no alpha channel). On load it splits the file into two
    `juce::MemoryBlock`s: `headerBytes` and `pixelBytes` (the only thing a plugin is
    ever allowed to touch). BMP parsing follows `bfOffBits` from the file header
    rather than assuming a fixed 54 bytes, so it's correct even with unusual DIB
    header variants. `toJuceImage()` renders the current `pixelBytes` back into a
    displayable `juce::Image`, handling BMP's bottom-up-row/BGR-order quirks vs
-   PNM/PNG's top-down/RGB(A). It always renders plain — the selection highlight is
-   drawn separately, as a line overlay by the viewing component (see "Selection →
-   image highlight" below).
+   PNM/PNG/JPEG's top-down/RGB(A). It always renders plain — the selection
+   highlight is drawn separately, as a line overlay by the viewing component (see
+   "Selection → image highlight" below).
    - TIFF is **not** supported — deliberately deferred (see Deferred Work). BMP/PNM
      were chosen because their headers are simple/fixed-size, so "protected region"
      is trivial to define correctly, unlike TIFF's IFD/strip-offset structure.
@@ -94,6 +95,13 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
      through `juce::Image::ARGB`'s premultiplied 8-bit storage on *load*, which
      loses up to ±1-2/255 at low alpha — not worth a hand-rolled non-premultiplied
      PNG scanline decoder for this.
+   - **JPEG loading** (`RawImage::loadJpeg()`) is the same decode-and-repack shape
+     as PNG loading, minus the alpha-detection step (JPEG never has alpha, so this
+     is always 3-channel RGB) — both share `packImageToInterleavedBytes()`, the
+     pixel-by-pixel `juce::Image::BitmapData::getPixelColour()` packing loop
+     factored out once both formats needed it. Dispatch in `loadFromFile()` sniffs
+     the SOI marker (`0xFF 0xD8`, present at the start of every JPEG variant —
+     JFIF, EXIF, etc.) the same way PNG's signature and BMP's `"BM"` are sniffed.
    - **Fujifilm RAF and Adobe DNG camera-raw files *are* supported — but not by
      `RawImage` itself.** `RawCameraConverter.h/.cpp` sniffs for these formats
      (RAF's literal `"FUJIFILMCCD-RAW"` magic; DNG's/any TIFF's `II*\0`/`MM\0*`

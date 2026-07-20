@@ -88,7 +88,12 @@ std::unique_ptr<RawImage> RawImage::loadFromFile(const juce::File& file, juce::S
     if (probe.getSize() >= 8 && std::memcmp(probe.getData(), pngSignature, 8) == 0)
         return loadPng(file, errorMessage);
 
-    errorMessage = "Unrecognised format — only 24-bit uncompressed BMP, raw PNM (P5/P6), and PNG are supported.";
+    // JPEG's SOI (Start Of Image) marker -- every JPEG file, regardless of
+    // variant (JFIF/EXIF/etc.), begins with these 2 bytes.
+    if (probe.getSize() >= 2 && (uint8_t) probe[0] == 0xFF && (uint8_t) probe[1] == 0xD8)
+        return loadJpeg(file, errorMessage);
+
+    errorMessage = "Unrecognised format — only 24-bit uncompressed BMP, raw PNM (P5/P6), PNG, and JPEG are supported.";
     return nullptr;
 }
 
@@ -509,6 +514,54 @@ std::unique_ptr<RawImage> RawImage::loadPng(const juce::File& file, juce::String
 
     const int channels = hasAlpha ? 4 : 3;
 
+    auto result = std::make_unique<RawImage>();
+    result->format = Format::png;
+    result->width = width;
+    result->height = height;
+    result->channels = channels;
+    result->rowStride = width * channels;
+    result->bottomUp = false; // decoded top-down, like PNM -- headerBytes stays empty, nothing to derive orientation from
+    result->pixelBytes = packImageToInterleavedBytes(image, channels);
+
+    return result;
+}
+
+std::unique_ptr<RawImage> RawImage::loadJpeg(const juce::File& file, juce::String& errorMessage)
+{
+    juce::Image image = juce::ImageFileFormat::loadFrom(file);
+
+    if (! image.isValid())
+    {
+        errorMessage = "Could not decode JPEG file.";
+        return nullptr;
+    }
+
+    const int width = image.getWidth();
+    const int height = image.getHeight();
+
+    if (width <= 0 || height <= 0 || width > maxDimension || height > maxDimension)
+    {
+        errorMessage = "JPEG dimensions out of supported range.";
+        return nullptr;
+    }
+
+    auto result = std::make_unique<RawImage>();
+    result->format = Format::jpeg;
+    result->width = width;
+    result->height = height;
+    result->channels = 3; // JPEG has no alpha channel
+    result->rowStride = width * 3;
+    result->bottomUp = false; // decoded top-down, like PNM/PNG -- headerBytes stays empty, nothing to derive orientation from
+    result->pixelBytes = packImageToInterleavedBytes(image, 3);
+
+    return result;
+}
+
+juce::MemoryBlock RawImage::packImageToInterleavedBytes(const juce::Image& image, int channels)
+{
+    const int width = image.getWidth();
+    const int height = image.getHeight();
+
     juce::MemoryBlock outPixels;
     outPixels.setSize((size_t) width * (size_t) height * (size_t) channels, false);
     auto* const dst = static_cast<uint8_t*>(outPixels.getData());
@@ -528,21 +581,12 @@ std::unique_ptr<RawImage> RawImage::loadPng(const juce::File& file, juce::String
             p[1] = colour.getGreen();
             p[2] = colour.getBlue();
 
-            if (hasAlpha)
+            if (channels == 4)
                 p[3] = colour.getAlpha();
         }
     }
 
-    auto result = std::make_unique<RawImage>();
-    result->format = Format::png;
-    result->width = width;
-    result->height = height;
-    result->channels = channels;
-    result->rowStride = width * channels;
-    result->bottomUp = false; // decoded top-down, like PNM -- headerBytes stays empty, nothing to derive orientation from
-    result->pixelBytes = std::move(outPixels);
-
-    return result;
+    return outPixels;
 }
 
 RawImage::BmpHeaderFields RawImage::getBmpHeaderFields() const
