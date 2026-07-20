@@ -1,7 +1,7 @@
 <img width="3840" height="1438" alt="Dog reverb" src="https://github.com/user-attachments/assets/2f5d5c39-19b0-46ce-a725-421be3fc1461" />
 
 # Pixel Bender
-## An image editing tool to databend raw image files with audio VST3 plugins
+## An image editing tool to databend image files with audio VST3 plugins
 
 # Features  
 ## ✂️ Selective glitching 
@@ -23,7 +23,7 @@ Ramp a plugin parameter across the selection instead of setting it static
 
 - ↩️ **Undo/redo**
 - 🎛️ **Works with VST3 and AU plugins** 
-- 📷 **Supports BMP, PNM, RAF and DNG**
+- 📷 **Supports JPEG, PNG, BMP, PNM, RAF and DNG**
 - 🖼️ **Exports to PNG**
 
 ## Requirements
