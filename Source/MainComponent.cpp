@@ -383,6 +383,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
     commands.add(undoCommand);
     commands.add(redoCommand);
     commands.add(cancelEditorCommand);
+    commands.add(loadImageCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -415,6 +416,19 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             result.setActive(pluginEditorPanel != nullptr || headerEditorPanel != nullptr);
             break;
 
+        case loadImageCommand:
+            // Not shown in any menu -- File > Load Image... stays a plain
+            // (non-command) menu item; this is purely the keyboard-shortcut
+            // path. Same gating as that menu item's own enablement
+            // (isPanelOpen() in MainMenuModel::Callbacks) plus
+            // ! imageLoadInProgress, since loadImageClicked() itself would
+            // otherwise just no-op mid-load anyway -- keeping it inactive here
+            // is more honest than a shortcut that silently does nothing.
+            result.setInfo("Load Image...", "Load a BMP, PNM, or PNG image", "File", 0);
+            result.addDefaultKeypress('o', juce::ModifierKeys::commandModifier);
+            result.setActive(pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            break;
+
         default:
             break;
     }
@@ -433,6 +447,8 @@ bool MainComponent::perform(const InvocationInfo& info)
             else if (headerEditorPanel != nullptr)
                 cancelHeaderEditClicked();
             return true;
+
+        case loadImageCommand: loadImageClicked(); return true;
 
         default: return false;
     }

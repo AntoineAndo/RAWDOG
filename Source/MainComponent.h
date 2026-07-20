@@ -41,10 +41,13 @@ private:
     {
         undoCommand = 1000,
         redoCommand,
-        cancelEditorCommand // Escape — cancels whichever of pluginEditorPanel/
+        cancelEditorCommand, // Escape — cancels whichever of pluginEditorPanel/
                             // headerEditorPanel is currently open, not shown
                             // in any menu (keyboard-only, mirroring each
                             // panel's own Cancel button)
+        loadImageCommand // Cmd+O — same action as File > Load Image..., which
+                          // stays a plain (non-command) menu item; this is
+                          // purely the keyboard-shortcut path.
     };
 
     void refreshPluginList();
