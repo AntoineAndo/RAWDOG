@@ -314,6 +314,31 @@ purely as a structural refactor with no behavior change:
     filters by name/manufacturer/format via `containsIgnoreCase`, combining
     correctly with whichever tab is active. Favourites persist to disk; search
     text and tab selection and per-vendor expand/collapse state are session-only.
+  - **Plugin presets** (`PluginPresetsStore.h/.cpp`; "Save as Preset" button on
+    `PluginEditorPanel`). Captures the currently-loaded plugin's parameter
+    state (`AudioProcessor::getStateInformation()`) and persists it under an
+    auto-generated name ("Preset 1", "Preset 2", ...) keyed by the same
+    `PluginDescription::createIdentifierString()` favourites already use —
+    same `ApplicationProperties`/`PropertiesFile`-backed persistence
+    convention, but as one JSON object (`{ identifierString: [{name, state},
+    ...] }`, `state` base64-encoded since JSON has no binary type) rather than
+    a newline-joined string, since a preset needs more than a boolean flag.
+    A plugin row with ≥1 saved preset gets its own disclosure triangle
+    (▸/▾, reserved column before the star so the star's position never shifts
+    depending on whether a given plugin happens to have presets) — expanding
+    it reveals indented preset rows nested underneath, each with a delete "×"
+    gated behind a confirmation dialog. This required generalizing
+    `PluginListModel`'s vendor-grouping accordion machinery
+    (`DisplayRow`/`displayRows`/`rebuildDisplayRows()`), previously only
+    active in "By Vendor" mode, to *always* apply — every row (vendor header,
+    plugin, or preset) now lives in one flat `displayRows` array regardless of
+    `groupByVendor`, so a preset can nest under a plugin row in flat mode too.
+    Double-clicking a preset row loads that plugin (`PluginHost::createInstance()`)
+    and applies the saved state via `setStateInformation()` *before* opening
+    its editor (`PluginListModel::getLoadTarget()`, replacing the old direct
+    `getType()` call in `MainComponent::loadAndOpenPlugin()` — `getType()`
+    itself became fully dead code once painting/click-handling were rewritten
+    to index `cachedTypes` directly, and was deleted).
 - **Resizable panel layout**: the whole window (list, plugin editor panel,
   image preview, waveform) uses `juce::StretchableLayoutManager` +
   `juce::StretchableLayoutResizerBar` for user-draggable dividers — a new
@@ -344,12 +369,14 @@ purely as a structural refactor with no behavior change:
   fallback for plugins without a custom UI) is embedded in-place, wrapped in a
   `juce::Viewport` (editors vary wildly in size/aspect ratio, so the panel
   scrolls rather than force-resizing the plugin's UI — see the resizable-layout
-  bullet above for how the panel's column itself is sized). **"Apply" and
-  "Cancel" buttons are docked underneath side by side** (Cancel added after
-  Apply-only proved confusing — Cancel discards any unapplied live-preview
+  bullet above for how the panel's column itself is sized). **"Save as Preset",
+  "Cancel", and "Apply" buttons are docked underneath** (Save as Preset added
+  furthest left, separated from the primary commit/discard pair — see the
+  plugin-presets bullet above for what it does; Cancel added after Apply-only
+  proved confusing — Cancel discards any unapplied live-preview
   tweaks via `endLivePreviewSession(false)`, mirroring what already happens
-  when swapping to a different plugin without applying; both are still the
-  only ways to dismiss the panel). While the panel is open, tweaking the plugin's own parameters drives a **live,
+  when swapping to a different plugin without applying; Cancel/Apply remain
+  the only ways to dismiss the panel). While the panel is open, tweaking the plugin's own parameters drives a **live,
   non-destructive preview**: `PluginParameterWatcher` (`PluginParameterWatcher.h`)
   listens via `juce::AudioProcessorListener` and coalesces bursts of parameter
   callbacks (which may arrive off the message thread) through `juce::AsyncUpdater`
@@ -516,9 +543,12 @@ purely as a structural refactor with no behavior change:
   deltas — see `mouseWheelMove`), pinch gesture zooms centered on the cursor
   (standard "zoom to point" math: capture the image-space point under the
   cursor, change scale, recompute offset so that same point stays under the
-  cursor), double-click resets to fit-the-viewport. `mouseDrag` is currently a
-  no-op (click-drag does **not** pan — panning is wheel/trackpad-only per
-  above), reserved for a future feature. **Clicking the preview while no image
+  cursor), double-click resets to fit-the-viewport. `mouseDown`/`mouseDrag`
+  now drive the interactive selection-highlight rectangle (see "Selection →
+  image highlight" below) — click-drag on the image itself still does **not**
+  pan (panning stays wheel/trackpad-only per above); a plain click that lands
+  outside the highlight rectangle (or when there is none) falls through to
+  `onClick`. **Clicking the preview while no image
   is loaded triggers the same "Load Image..." flow as the File menu**
   (`onClickWithNoImage` callback, fired from `mouseDown` only when
   `! image.isValid()`, wired to `MainComponent::loadImageClicked()`) — the
@@ -547,7 +577,9 @@ purely as a structural refactor with no behavior change:
     just blitted directly (`g.drawImageAt()`) on every repaint; regenerated
     only when `image`/`scale`/`offset` actually change (`setImage()`,
     `fitToView()`, `mouseWheelMove()`, `applyZoom()`), never when only
-    `setHighlightLines()` is called. Deliberately not
+    `setHighlightRegion()` is called (nor when only the highlight rectangle's
+    hover/drag state changes — see "Selection → image highlight" below).
+    Deliberately not
     `Component::setBufferedToImage()` — confirmed via JUCE source that a
     buffered *parent's* cache still gets invalidated by a *child's* repaint
     bubbling up, so nesting the overlay as a child wouldn't have helped;
@@ -559,11 +591,15 @@ purely as a structural refactor with no behavior change:
   waveform that's `RawImage::getVisualOrderedPixelBytes()` (visual top-down, unpadded
   order, **not** `pixelBytes` directly — see the row-flip bug fix in Milestones
   below for why), for a split lane it's `getChannelPlane()`. This sample-index-as-
-  byte-index equivalence will need revisiting when M3 lands. Has its own vertical zoom (a pure display-amplitude
-  multiplier, clipped to ±1 — doesn't touch underlying data) and horizontal
-  zoom+scroll (a `juce::Slider` + `juce::ScrollBar`, wired via
-  `WaveformView::onViewChanged` callback so `MainComponent::syncScrollBarToView()`
-  keeps the scrollbar's thumb size/position in sync with the view window).
+  byte-index equivalence will need revisiting when M3 lands. Horizontal zoom/pan
+  is gesture-driven (pinch-to-zoom anchored on the cursor via `mouseMagnify`,
+  two-finger trackpad drag to pan via `mouseWheelMove` — same convention as
+  `ZoomableImageView`'s image-preview gestures), plus a `juce::ScrollBar` kept
+  in sync via `WaveformView::onViewChanged`/`MainComponent::syncScrollBarToView()`.
+  Both the horizontal zoom slider *and* a separate vertical (display-amplitude)
+  zoom slider that used to sit here were removed outright as user-requested
+  polish — the gestures replaced the former, and the latter was judged
+  unnecessary once they existed.
   - **Render cache, for the same reason `ZoomableImageView` got one.**
     `mouseDrag()` calls `repaint()` unconditionally on every raw mouse-move
     event during a selection drag — unlike the image-preview path, this one
@@ -611,7 +647,11 @@ purely as a structural refactor with no behavior change:
     visible sample window) is what actually helps you find precise selection
     boundaries.
   - **Resizable/movable selection**: a selection's left/right edges are
-    draggable resize handles (small grip marks drawn at each edge, a
+    draggable resize handles (a white pill-shaped grip marker drawn at each
+    edge — the same handle style was later retrofitted onto
+    `ZoomableImageView`'s own highlight-rectangle edges, see "Selection →
+    image highlight" below, so both selection affordances read as one
+    consistent interaction language — a
     left-right resize mouse cursor on hover, `handleGrabPixels = 6` hit-test
     tolerance), and click-dragging the body of an existing selection (a
     dragging-hand cursor) moves the whole thing while keeping its length —
@@ -627,7 +667,7 @@ purely as a structural refactor with no behavior change:
   rendered `juce::Image`'s pixel data (first a 50% yellow blend over every
   selected pixel, then a 4-sided outline, then top/bottom-only marker
   lines — see Milestones below for that lineage) — **all of that is gone
-  now.** The highlight is drawn as a cheap **line overlay by
+  now.** The highlight is drawn as a cheap **overlay by
   `ZoomableImageView` itself**, on top of a plain rendered image, never
   touching pixel data at all. `RawImage::toJuceImage()`/
   `toJuceImageFromBytes()` lost their highlight parameter entirely — always
@@ -636,21 +676,55 @@ purely as a structural refactor with no behavior change:
   channel-scoped selection) returns an `optional<HighlightOverlay>` — two
   row indices (`topRow`/`bottomRow`) — computed via pure `O(1)` integer
   arithmetic (`start/rowBytes`, `(end-1)/rowBytes`; literally "which row does
-  this fraction of the buffer fall on"), never a loop over `height`. Each
-  line spans the *full image width* rather than just the boundary row's own
-  intersected columns — a deliberate simplification (a partial first/last
-  row's line reads as "here's the selection's vertical extent," not a
-  precise per-column boundary) — so `HighlightOverlay`'s column fields are
-  always `0`/`width` on both lines. `MainComponent::updateHighlightOverlay()`
-  turns that into two `juce::Line<float>` in image-space coordinates and
-  calls `ZoomableImageView::setHighlightLines()`, which `paint()` transforms
-  through the same `AffineTransform` it already uses to draw the image
-  (`getImageToScreenTransform()`, extracted for reuse) and draws with
-  `Graphics::drawLine()` at a constant on-screen thickness — so the marker
-  stays clearly visible at any zoom level, unlike a baked-in outline whose
-  thickness was fixed in image pixels. `ZoomableImageView` deliberately
-  knows nothing about `RawImage`/selections — just image-space line
-  coordinates and a colour — keeping it generic/reusable.
+  this fraction of the buffer fall on"), never a loop over `height`. The
+  overlay always spans the *full image width* rather than just the boundary
+  row's own intersected columns — a deliberate simplification (it reads as
+  "here's the selection's vertical extent," not a precise per-column
+  boundary) — so `HighlightOverlay`'s column fields are always `0`/`width`.
+
+  **The overlay evolved from two static marker lines into a fully
+  interactive, draggable rectangle** (user-requested — "the bars should be
+  draggable, like the waveform's own selection"). `MainComponent::
+  updateHighlightOverlay()` turns the `topRow`/`bottomRow` pair into a single
+  half-open `juce::Range<int>` and calls
+  `ZoomableImageView::setHighlightRegion()`, which stores it as an *inclusive*
+  `{topRow, bottomRow}` pair internally (deliberately not a `Range<int>` —
+  see the gotcha below) and `paint()` transforms it through the same
+  `AffineTransform` already used to draw the image
+  (`getImageToScreenTransform()`) into a screen-space rectangle: filled with
+  a hover/drag-only tint (fully transparent at rest, so it doesn't visually
+  compete with whatever the live preview is showing underneath), a coloured
+  border, and a white pill-shaped grip handle at each edge (the same handle
+  style was retrofitted onto `WaveformView`'s own selection, so both
+  selection affordances read as one consistent interaction language). Dragging
+  an edge resizes it, dragging the body moves it — `ZoomableImageView` gained
+  its own drag-state machine (`HighlightDragMode::resizingTop/resizingBottom/
+  movingRegion`) mirroring `WaveformView`'s existing one almost exactly, plus
+  `onHighlightRegionDragStart`/`onHighlightRegionChanged` callbacks matching
+  `WaveformView`'s `onBeforeSelectionChange`/`onSelectionChanged` convention
+  (undo-snapshot on gesture start, coalesced live update on every drag frame).
+  A drag reports the new row range back out; `RawImage` gained
+  `rowRangeToHighlightByteRange()`/`rowRangeToChannelHighlightSampleRange()`,
+  the exact inverses of `computeHighlightOverlay()`/
+  `computeChannelHighlightOverlay()`, so `MainComponent` can convert a
+  row-space drag back into whichever sample-range representation the actual
+  waveform selection uses (`WaveformView::setSelectionSampleRange()`) —
+  which itself fires `onSelectionChanged`, so the existing async
+  highlight/live-preview refresh plumbing picks the change up with no new
+  wiring needed. Both the rectangle's hit-test and its visible band are
+  confined to the image's own rendered width, not the wider preview panel —
+  an early version let the interactive target extend past the image
+  horizontally by accident (a click at the right row but outside the image
+  wrongly registered as a hit), corrected once reported. **Gotcha worth
+  remembering if this code is touched again**: `WaveformView`'s selection
+  values are continuous/half-open (`selectionEndSample` behaves like a
+  `Range::getEnd()`), but `HighlightOverlay`'s `topRow`/`bottomRow` are
+  *inclusive* discrete row indices — copying `WaveformView`'s resize-clamp
+  formula verbatim (clamping against `numSamples`) is subtly wrong here; the
+  image-preview clamps must use `height - 1`, not `height`, as the upper
+  bound. `ZoomableImageView` still knows nothing about `RawImage`/selections
+  specifically — just an image-space row range and a colour — keeping it
+  generic/reusable.
 
   This is a bigger win than the highlight-rendering optimizations that
   preceded it (both now deleted, along with `renderWithRowSelection()`
@@ -1183,6 +1257,81 @@ purely as a structural refactor with no behavior change:
   (source-buffer caching, the epoch staleness check, the three flush
   operations, the `thread_local` feedback-loop guard that replaced
   `ScopedWatcherPause`, and the throttled-delivery timer).
+- *(user-requested polish)* — **a real visual theme.** Replaced JUCE's default
+  flat-grey `LookAndFeel` with `PixelBenderLookAndFeel`/
+  `PixelBenderLookAndFeel::Palette` (dark neutral background/surface colours,
+  a blue accent, rounded tab/button/text-editor chrome), installed globally
+  via `juce::LookAndFeel::setDefaultLookAndFeel()`. Every hand-painted
+  component (`PluginListModel`, `WaveformView`, `WaveformSectionPanel`,
+  `ZoomableImageView`, `RightColumnPanel`'s viewport frame) now pulls colours
+  from the same `Palette::get()` singleton instead of raw `juce::Colours::*`
+  literals. The plugin-list search box gained a hand-drawn magnifying-glass
+  icon and a clear ("×") button (shown only once text is entered), replacing
+  a bare `juce::TextEditor`.
+- *(user-requested feature)* — **window size/position now persists across
+  relaunches.** `PixelBenderApplication` round-trips `DocumentWindow::
+  getWindowStateAsString()`/`restoreWindowStateFromString()` through a plain
+  text file, written in `shutdown()` and restored in `initialise()`. **Gotcha
+  hit and fixed**: the file ended up at `~/Library/Pixel Bender/`, not
+  `~/Library/Application Support/Pixel Bender/` as first assumed —
+  `juce::File::userApplicationDataDirectory` resolves to `~/Library` directly
+  on macOS (confirmed via JUCE source, `juce_Files_mac.mm`), matching
+  `PluginScanner`'s existing folder convention, which apps must append
+  "Application Support" (or not) to themselves rather than getting it for free.
+- *(user-requested feature)* — **Cmd+O (Load Image) and a new Cmd+Shift+R
+  (Reset to Original)** are now real `ApplicationCommand`s added to their
+  File-menu items via `menu.addCommandItem()` (same treatment Undo/Redo
+  already had), so JUCE renders the shortcut label next to each item
+  automatically — Load Image was previously a plain, shortcut-less
+  `menu.addItem()` with Cmd+O wired only as a keyboard-only command with no
+  visible label.
+- *(user-requested feature)* — **a "discard unsaved changes?" confirmation**
+  (`MainComponent::confirmDiscardChangesIfNeeded()`, `juce::AlertWindow::
+  showAsync` + `MessageBoxOptions::makeOptionsOkCancel`) now gates Load Image,
+  Reset to Original, and quitting the app (`PixelBenderApplication::
+  systemRequestedQuit()`, which now defers to `quit()` only after this
+  confirmation resolves) whenever `undoStack` is non-empty. **Gotcha hit and
+  fixed**: `AlertWindow::showAsync`'s callback does not report a plain
+  0-based button index — the first attempt assumed it did (reading
+  `convertResult()`'s `NSAlertFirstButtonReturn → 0` in
+  `juce_NativeMessageBox_mac.mm`) and had Cancel/Discard's meaning backwards.
+  Empirically the callback instead follows the `(buttonIndex + 1) %
+  numButtons` convention documented on the older, deprecated
+  `AlertWindow::showOkCancelBox()` — fixed once the user reported it, and the
+  same corrected mapping was reused for the plugin presets
+  delete-confirmation dialog below. See the rough-edges section further down
+  for the fuller writeup.
+- *(user-requested feature)* — **clicking the image preview (with an image
+  loaded) clears the current waveform selection**
+  (`ZoomableImageView::onClick`, wired to a new `MainComponent::
+  clearCurrentSelection()`), reusing `WaveformView::clearSelection()` — which
+  already existed but had never actually been wired to any UI trigger before
+  this.
+- *(user-requested feature)* — **the image-preview selection highlight became
+  a fully interactive, draggable rectangle** instead of two static marker
+  lines — resizable by its edges, movable by its body, with a hover/drag tint
+  and white pill-shaped handles matching a style retrofitted onto the
+  waveform's own selection too. See "Selection → image highlight" above for
+  the full design, including the inclusive-row-vs-half-open-sample-range
+  gotcha and the image-width-confinement fix.
+- *(user-requested feature)* — **plugin presets.** A "Save as Preset" button
+  on the plugin editor panel captures the plugin's current parameter state
+  and persists it (auto-named "Preset 1"/"Preset 2"/...) keyed by the same
+  plugin-identity string favourites use; a plugin's row in the list becomes
+  expandable once it has ≥1 saved preset, revealing preset rows (each
+  deletable, behind a confirmation dialog) nested underneath, in both flat
+  and "By Vendor" list modes. Required generalizing `PluginListModel`'s
+  vendor-grouping accordion machinery to always apply, not just in "By
+  Vendor" mode. See the plugin-list bullet above for the full design.
+- *(layout fix, surfaced while capping the waveform panel's height per user
+  request)* — the waveform section's internal layout previously gave the
+  waveform view a *fixed* height and dumped any extra panel height into the
+  horizontal scrollbar strip, so dragging the panel taller just produced an
+  oversized scrollbar handle instead of a taller waveform. Fixed by carving
+  the scrollbar's now-fixed height off first and letting the waveform view
+  fill whatever remains; the panel's max height is also now capped (a fixed
+  pixel value, not a proportional one) so it can't grow unbounded in the
+  first place.
 
 ## What's NOT done yet (planned)
 
@@ -1214,7 +1363,11 @@ purely as a structural refactor with no behavior change:
   manages the fragile IFD/strip-offset header, exposing just a pixel-data pointer
   to the same pipeline that already treats header-vs-pixel-bytes as protected vs.
   bendable.
-- **Presets, batch processing.**
+- **Batch processing.** (Plugin *parameter* presets — save/recall a plugin's
+  tweaked settings, listed under its row in the plugin list — were also on
+  this deferred list originally but have since been built; see Milestones
+  above. This entry is now specifically about processing multiple images/runs
+  in one go, still not implemented.)
 - Pixel-highlight overlay was *also* on this deferred list originally but got
   built already (see above) — the sample-index→pixel-index mapping turned out to
   be simple enough to pull forward.
@@ -1233,7 +1386,29 @@ purely as a structural refactor with no behavior change:
   under Build & run — reuse it for anything that needs proof beyond visual
   inspection, since driving the GUI programmatically (mouse drag, menu clicks,
   screenshots) was not available in this environment (no screen-recording
-  permission was granted to the terminal).
+  permission was granted to the terminal, and `osascript`/System Events UI
+  automation was also blocked — "not allowed assistive access" — so even
+  scripted clicks/drags aren't currently possible; `open`-launching the app
+  and quitting it via `osascript -e 'tell application ... to quit'` does work,
+  which is how the window-state persistence feature below was verified
+  end-to-end despite this).
+- **`juce::AlertWindow::showAsync`/`MessageBoxOptions::makeOptionsOkCancel`'s
+  callback does NOT report a plain 0-based button index** — empirically
+  (confirmed against real clicks in this app), the first button passed to
+  `makeOptionsOkCancel()` (e.g. "Discard"/"Delete") arrives in the callback as
+  `1`, and the second (e.g. "Cancel") arrives as `0` — matching the
+  `(buttonIndex + 1) % numButtons` convention documented on the older,
+  deprecated `AlertWindow::showOkCancelBox()`, not a naive reading of
+  `convertResult()`'s `NSAlertFirstButtonReturn → 0` mapping in
+  `juce_NativeMessageBox_mac.mm` (there's evidently a remapping layer between
+  that raw native result and what `showAsync`'s `std::function<void(int)>`
+  callback actually receives). A first attempt assumed the plain-0-based
+  reading and had every confirmation dialog's Confirm/Cancel backwards
+  (Discard did nothing, Cancel proceeded) until caught by the user and fixed.
+  Every confirmation dialog since (discard-changes on Load/Reset/Quit,
+  plugin-preset deletion) checks `result == 1` for "first button clicked" —
+  if you add another one, don't rederive this from source-reading; trust this
+  empirical mapping instead.
 - The plugin list, waveform controls, and Export/Reset menu items are all
   disabled/enabled based on `workingImage != nullptr` — if you add a new
   image-dependent control, wire it into `updatePluginListEnablement()` (misnamed

@@ -4,9 +4,11 @@
 
 void MainComponent::loadAndOpenPlugin(int row)
 {
-    auto* desc = listModel.getType(row);
-    if (desc == nullptr)
+    auto target = listModel.getLoadTarget(row);
+    if (! target.has_value() || target->description == nullptr)
         return;
+
+    const auto* desc = target->description;
 
     if (currentPlugin != nullptr)
     {
@@ -24,6 +26,12 @@ void MainComponent::loadAndOpenPlugin(int row)
         setStatus("Failed to load plugin: " + errorMessage);
         return;
     }
+
+    // A preset row's saved state, applied before the editor opens so the very
+    // first refreshLivePreview() call inside openEditorClicked() already
+    // reflects it, rather than the plugin's freshly-instantiated defaults.
+    if (target->presetState.has_value())
+        currentPlugin->setStateInformation(target->presetState->getData(), (int) target->presetState->getSize());
 
     pluginParamWatcher.attachTo(*currentPlugin);
 
@@ -69,6 +77,10 @@ void MainComponent::openEditorClicked()
     [this]
     {
         refreshLivePreview();
+    },
+    [this]
+    {
+        savePresetClicked();
     });
 
     leftColumn.setEditorPanel(pluginEditorPanel.get());
@@ -91,6 +103,21 @@ void MainComponent::openEditorClicked()
     // Reflects the plugin's default parameter state immediately, before any tweak,
     // so a live-preview result is populated even if Apply is clicked with zero changes.
     refreshLivePreview();
+}
+
+void MainComponent::savePresetClicked()
+{
+    if (currentPlugin == nullptr)
+        return;
+
+    juce::MemoryBlock state;
+    currentPlugin->getStateInformation(state);
+    pluginPresetsStore.addPreset(currentPlugin->getPluginDescription().createIdentifierString(), state);
+
+    listModel.notifyPresetsChanged();
+    pluginListBox.updateContent();
+    pluginListBox.repaint();
+    setStatus("Preset saved.");
 }
 
 std::shared_ptr<const juce::MemoryBlock> MainComponent::getOrBuildLivePreviewSource(std::optional<RawImage::Channel> channel)

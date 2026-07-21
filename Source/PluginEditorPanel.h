@@ -6,17 +6,20 @@
 
 // Embeds a plugin's editor in-place (instead of a separate OS popup window),
 // wrapped in a Viewport so any editor size/aspect ratio scrolls cleanly rather
-// than clipping or being force-resized, with an "Apply" button docked underneath.
-// A small "Editor"/"Automation" tab strip at the top swaps between the native
-// editor and a ParameterAutomationPanel for defining fade-in/fade-out ramps on
-// the plugin's own parameters -- Apply/Cancel stay docked at the bottom either
-// way, since Apply always commits whatever the live preview currently reflects.
+// than clipping or being force-resized, with "Save as Preset"/Cancel/Apply
+// buttons docked underneath. A small "Editor"/"Automation" tab strip at the
+// top swaps between the native editor and a ParameterAutomationPanel for
+// defining fade-in/fade-out ramps on the plugin's own parameters -- the
+// button strip stays docked at the bottom either way, since Apply always
+// commits whatever the live preview currently reflects and Save as Preset
+// always captures the plugin's current parameter state regardless of which
+// tab is showing.
 class PluginEditorPanel : public juce::Component
 {
 public:
     PluginEditorPanel(std::unique_ptr<juce::AudioProcessorEditor> editorIn, juce::AudioProcessor& processor,
                       std::function<void()> onApply, std::function<void()> onCancel,
-                      std::function<void()> onAutomationChanged)
+                      std::function<void()> onAutomationChanged, std::function<void()> onSaveAsPreset)
         : editor(std::move(editorIn)), automationPanel(processor)
     {
         viewport.setViewedComponent(editor.get(), false); // false: editor stays owned by our unique_ptr
@@ -31,8 +34,10 @@ public:
         modeTabs.onTabChanged = [this](int) { updateTabVisibility(); };
         updateTabVisibility();
 
+        addAndMakeVisible(savePresetButton);
         addAndMakeVisible(cancelButton);
         addAndMakeVisible(applyButton);
+        savePresetButton.onClick = std::move(onSaveAsPreset);
         cancelButton.onClick = std::move(onCancel);
         applyButton.onClick = std::move(onApply);
     }
@@ -45,6 +50,7 @@ public:
     {
         auto area = getLocalBounds();
         auto buttonStrip = area.removeFromBottom(40).reduced(8);
+        savePresetButton.setBounds(buttonStrip.removeFromLeft(130).reduced(4, 0));
         applyButton.setBounds(buttonStrip.removeFromRight(buttonStrip.getWidth() / 2).reduced(4, 0));
         cancelButton.setBounds(buttonStrip.reduced(4, 0));
 
@@ -88,6 +94,7 @@ private:
     juce::Viewport viewport;
     ModeTabs modeTabs;
     ParameterAutomationPanel automationPanel;
+    juce::TextButton savePresetButton { "Save as Preset" };
     juce::TextButton cancelButton { "Cancel" };
     juce::TextButton applyButton { "Apply" };
 };

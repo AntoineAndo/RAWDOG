@@ -22,6 +22,7 @@ target_sources(PixelBender PRIVATE
     Source/MainComponentPluginEditor.cpp
     Source/MainMenuModel.cpp
     Source/PluginListModel.cpp
+    Source/PluginPresetsStore.cpp
     Source/PluginScanner.cpp
     Source/PluginHost.cpp
     Source/RawCameraConverter.cpp

@@ -68,7 +68,7 @@ void ZoomableImageView::paint(juce::Graphics& g)
         const auto screenRect = getHighlightRegionScreenBounds();
         const bool activeTint = hoveringHighlightRegion || highlightDragMode != HighlightDragMode::none;
 
-        g.setColour(highlightColour.withAlpha(activeTint ? 0.28f : 0.0f));
+        g.setColour(highlightColour.withAlpha(activeTint ? 0.14f : 0.0f));
         g.fillRect(screenRect);
         g.setColour(highlightColour.withAlpha(activeTint ? 0.9f : 0.6f));
         g.drawRect(screenRect, 1.5f);

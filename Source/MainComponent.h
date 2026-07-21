@@ -14,6 +14,7 @@
 #include "PluginEditorPanel.h"
 #include "PluginListModel.h"
 #include "PluginParameterWatcher.h"
+#include "PluginPresetsStore.h"
 #include "PluginScanner.h"
 #include "RawImage.h"
 #include "RightColumnPanel.h"
@@ -69,6 +70,7 @@ private:
     void openEditorClicked();
     void applyClicked();
     void cancelEditorClicked();
+    void savePresetClicked();
     void openHeaderEditorClicked();
     void applyHeaderEditClicked();
     void cancelHeaderEditClicked();
@@ -203,7 +205,8 @@ private:
     BusySpinner previewBusySpinner;
 
     FavouritePluginsStore favouritePluginsStore;
-    PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore };
+    PluginPresetsStore pluginPresetsStore;
+    PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },

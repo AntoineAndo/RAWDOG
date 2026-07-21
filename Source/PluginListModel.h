@@ -1,24 +1,30 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "FavouritePluginsStore.h"
+#include "PluginPresetsStore.h"
 
 class PluginListModel : public juce::ListBoxModel
 {
 public:
-    PluginListModel(juce::KnownPluginList& list, FavouritePluginsStore& favouritesIn)
-        : knownPluginList(list), favourites(favouritesIn) {}
+    PluginListModel(juce::KnownPluginList& list, FavouritePluginsStore& favouritesIn, PluginPresetsStore& presetsIn)
+        : knownPluginList(list), favourites(favouritesIn), presetsStore(presetsIn) {}
 
-    // Row layer used only when groupByVendor is active: either an
-    // accordion header for a vendor, or a leaf pointing back into
-    // cachedTypes.
+    // Every row -- vendor-group accordion header, plugin leaf, or preset leaf
+    // nested under a plugin -- lives in one flat displayRows array regardless
+    // of groupByVendor, so getNumRows()/getLoadTarget() never need a
+    // flat-vs-grouped special case; only rebuildDisplayRows() (below)
+    // branches on it.
     struct DisplayRow
     {
-        bool isHeader = false;
-        juce::String vendorName; // valid when isHeader
-        int pluginIndex = -1;          // index into cachedTypes, valid when !isHeader
+        enum class Kind { vendorHeader, plugin, preset };
+        Kind kind = Kind::plugin;
+        juce::String vendorName; // valid for vendorHeader
+        int pluginIndex = -1;    // index into cachedTypes, valid for plugin & preset
+        int presetIndex = -1;    // index into that plugin's getPresetNames(), valid for preset
     };
 
     void refresh()
@@ -27,7 +33,9 @@ public:
 
         // Additively seed newly-discovered vendors as expanded, without
         // clearing/resetting collapse choices the user already made for
-        // vendors seen earlier in the session.
+        // vendors seen earlier in the session. Deliberately NOT done for
+        // expandedPlugins -- a plugin's preset list starts collapsed, only
+        // ever expanded by an explicit click on its disclosure triangle.
         for (const auto& desc : allTypes)
             if (! expandedVendors.contains(desc.manufacturerName))
                 expandedVendors.add(desc.manufacturerName);
@@ -35,29 +43,39 @@ public:
         applyFilter();
     }
 
-    // Row index meaning depends on groupByVendor: when ungrouped, index
-    // straight into cachedTypes; when grouped, index into displayRows — returns
-    // nullptr for a header row (or an out-of-range row either way).
-    // MainComponent::loadAndOpenPlugin() already guards on nullptr, so
-    // double-clicking a header is a safe no-op with no extra guard needed there.
-    const juce::PluginDescription* getType(int index) const
+    // What double-clicking a row should load: the plugin to instantiate, and
+    // (only for a preset row) the parameter state to apply right after.
+    // Nullopt for a vendor header (nothing to load) or an out-of-range row.
+    struct RowTarget
     {
-        if (groupByVendor)
+        const juce::PluginDescription* description = nullptr;
+        std::optional<juce::MemoryBlock> presetState;
+    };
+
+    std::optional<RowTarget> getLoadTarget(int index) const
+    {
+        if (! juce::isPositiveAndBelow(index, displayRows.size()))
+            return std::nullopt;
+
+        const auto& row = displayRows.getReference(index);
+        if (row.kind == DisplayRow::Kind::vendorHeader)
+            return std::nullopt;
+
+        const auto& desc = cachedTypes.getReference(row.pluginIndex);
+
+        if (row.kind == DisplayRow::Kind::preset)
         {
-            if (! juce::isPositiveAndBelow(index, displayRows.size()))
-                return nullptr;
+            const auto presetNames = presetsStore.getPresetNames(desc.createIdentifierString());
+            if (! juce::isPositiveAndBelow(row.presetIndex, presetNames.size()))
+                return std::nullopt;
 
-            const auto& displayRow = displayRows.getReference(index);
-            if (displayRow.isHeader)
-                return nullptr;
-
-            return &cachedTypes.getReference(displayRow.pluginIndex);
+            return RowTarget { &desc, presetsStore.getPresetState(desc.createIdentifierString(), presetNames[row.presetIndex]) };
         }
 
-        return juce::isPositiveAndBelow(index, cachedTypes.size()) ? &cachedTypes.getReference(index) : nullptr;
+        return RowTarget { &desc, std::nullopt };
     }
 
-    int getNumRows() override { return groupByVendor ? displayRows.size() : cachedTypes.size(); }
+    int getNumRows() override { return displayRows.size(); }
 
     void paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
 
@@ -69,47 +87,7 @@ public:
             onDoubleClick(row);
     }
 
-    void listBoxItemClicked(int row, const juce::MouseEvent& e) override
-    {
-        if (! enabled)
-            return;
-
-        if (groupByVendor && juce::isPositiveAndBelow(row, displayRows.size())
-            && displayRows.getReference(row).isHeader)
-        {
-            const auto& vendorName = displayRows.getReference(row).vendorName;
-
-            if (expandedVendors.contains(vendorName))
-                expandedVendors.removeString(vendorName);
-            else
-                expandedVendors.add(vendorName);
-
-            rebuildDisplayRows();
-
-            if (onGroupExpansionChanged)
-                onGroupExpansionChanged();
-
-            return;
-        }
-
-        // Leaf rows in grouped mode are drawn with an extra left indent before
-        // the star column (see paintPluginRow/groupedLeafIndent) — the hit test
-        // must match that same offset, or clicks on the visible star miss and
-        // clicks on the blank indent strip wrongly register.
-        const int leftIndent = groupByVendor ? groupedLeafIndent : 0;
-        if (e.x < leftIndent || e.x >= leftIndent + starColumnWidth)
-            return;
-
-        if (auto* desc = getType(row))
-        {
-            const auto identifier = desc->createIdentifierString();
-            favourites.setFavourite(identifier, ! favourites.isFavourite(identifier));
-            applyFilter();
-
-            if (onFavouritesChanged)
-                onFavouritesChanged();
-        }
-    }
+    void listBoxItemClicked(int row, const juce::MouseEvent& e) override;
 
     void setEnabled(bool shouldBeEnabled) { enabled = shouldBeEnabled; }
 
@@ -131,6 +109,11 @@ public:
         applyFilter();
     }
 
+    // Called by MainComponent after saving/deleting a preset (from the
+    // plugin editor panel, outside this list) -- re-derives displayRows from
+    // already-current state, no full refresh()/re-scan needed.
+    void notifyPresetsChanged() { rebuildDisplayRows(); }
+
     static constexpr int starColumnWidth = 24;
 
     std::function<void(int)> onDoubleClick;
@@ -139,9 +122,19 @@ public:
 
 private:
     // Shared by both the ungrouped path and the grouped-leaf-row path in
-    // paintListBoxItem (defined in PluginListModel.cpp).
+    // paintListBoxItem (defined in PluginListModel.cpp). hasPresets/
+    // presetsExpanded control the disclosure-triangle column, reserved at
+    // leftIndent regardless of hasPresets so the star's x position never
+    // shifts depending on whether this particular plugin has any presets.
     void paintPluginRow(juce::Graphics& g, const juce::PluginDescription& desc, bool isFavourite,
-                        int leftIndent, int width, int height);
+                        bool hasPresets, bool presetsExpanded, int leftIndent, int width, int height);
+
+    void paintPresetRow(juce::Graphics& g, const juce::String& presetName, int leftIndent, int width, int height);
+
+    // Shows a confirmation dialog (same AlertWindow+MessageBoxOptions
+    // convention as MainComponent::confirmDiscardChangesIfNeeded) before
+    // actually deleting -- deletion can't be undone, unlike a favourite toggle.
+    void confirmAndDeletePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
 
     void applyFilter()
     {
@@ -169,13 +162,19 @@ private:
     // vendor with zero matches under an active search query correctly
     // produce no header row, with no extra filtering logic needed: if none of
     // its plugins survived applyFilter() into cachedTypes, it never appears in
-    // the map built below.
+    // the map built below. Unconditional now (no longer skipped in flat mode)
+    // since presets need to nest under a plugin row either way.
     void rebuildDisplayRows()
     {
         displayRows.clear();
 
         if (! groupByVendor)
+        {
+            for (int i = 0; i < cachedTypes.size(); ++i)
+                addPluginAndPresetRows(i);
+
             return;
+        }
 
         std::map<juce::String, juce::Array<int>> vendorToIndices;
 
@@ -194,7 +193,7 @@ private:
         for (const auto& vendorName : vendorNames)
         {
             DisplayRow header;
-            header.isHeader = true;
+            header.kind = DisplayRow::Kind::vendorHeader;
             header.vendorName = vendorName;
             displayRows.add(header);
 
@@ -207,16 +206,38 @@ private:
                       { return cachedTypes.getReference(a).name.compareIgnoreCase(cachedTypes.getReference(b).name) < 0; });
 
             for (auto index : indices)
-            {
-                DisplayRow leaf;
-                leaf.pluginIndex = index;
-                displayRows.add(leaf);
-            }
+                addPluginAndPresetRows(index);
+        }
+    }
+
+    // Appends the plugin leaf row for cachedTypes[pluginIndex], plus one
+    // preset row per saved preset if that plugin is currently expanded --
+    // shared by both the flat and by-vendor branches of rebuildDisplayRows().
+    void addPluginAndPresetRows(int pluginIndex)
+    {
+        DisplayRow pluginRow;
+        pluginRow.kind = DisplayRow::Kind::plugin;
+        pluginRow.pluginIndex = pluginIndex;
+        displayRows.add(pluginRow);
+
+        const auto identifier = cachedTypes.getReference(pluginIndex).createIdentifierString();
+        if (! expandedPlugins.contains(identifier))
+            return;
+
+        const auto presetNames = presetsStore.getPresetNames(identifier);
+        for (int p = 0; p < presetNames.size(); ++p)
+        {
+            DisplayRow presetRow;
+            presetRow.kind = DisplayRow::Kind::preset;
+            presetRow.pluginIndex = pluginIndex;
+            presetRow.presetIndex = p;
+            displayRows.add(presetRow);
         }
     }
 
     juce::KnownPluginList& knownPluginList;
     FavouritePluginsStore& favourites;
+    PluginPresetsStore& presetsStore;
     juce::Array<juce::PluginDescription> allTypes;
     juce::Array<juce::PluginDescription> cachedTypes;
     bool enabled = false;
@@ -225,5 +246,15 @@ private:
 
     bool groupByVendor = false;
     juce::StringArray expandedVendors;
+
+    // Which plugins (by identifier string) currently have their preset list
+    // expanded -- starts empty; unlike expandedVendors, never auto-seeded,
+    // since a plugin only becomes expandable once it has a saved preset.
+    juce::StringArray expandedPlugins;
+
     juce::Array<DisplayRow> displayRows;
+
+    static constexpr int disclosureColumnWidth = 16;
+    static constexpr int presetExtraIndent = 24;   // beyond the parent plugin row's own leftIndent
+    static constexpr int presetDeleteColumnWidth = 20;
 };
