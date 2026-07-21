@@ -125,8 +125,15 @@ void ZoomableImageView::mouseMagnify(const juce::MouseEvent& e, float scaleFacto
 
 void ZoomableImageView::mouseDown(const juce::MouseEvent&)
 {
-    if (! image.isValid() && onClickWithNoImage != nullptr)
-        onClickWithNoImage();
+    if (! image.isValid())
+    {
+        if (onClickWithNoImage != nullptr)
+            onClickWithNoImage();
+        return;
+    }
+
+    if (onClick != nullptr)
+        onClick();
 }
 
 void ZoomableImageView::mouseDrag(const juce::MouseEvent&)

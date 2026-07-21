@@ -113,6 +113,12 @@ private:
 
     void endLivePreviewSession(bool commitToWorkingImage);
 
+    // Wired to imagePreview.onClick -- deselects whichever waveform view
+    // currently owns the selection (the plain interleaved view, or the active
+    // split-mode lane), same as dragging out a new selection would, just
+    // without one. No-op with no image loaded.
+    void clearCurrentSelection();
+
     // Which selection is "the" current one for Apply/undo/highlight purposes:
     // a channel-scoped lane's selection when split mode is on and a lane has
     // an active selection, or the plain interleaved waveform's selection

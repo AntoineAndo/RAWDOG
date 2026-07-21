@@ -23,6 +23,7 @@ MainComponent::MainComponent()
     setWantsKeyboardFocus(true);
 
     imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
+    imagePreview.onClick = [this] { clearCurrentSelection(); };
 
     horizontalScrollBar.addListener(this);
     waveformView.onViewChanged = [this] { syncScrollBarToView(); };
@@ -305,6 +306,17 @@ void MainComponent::restoreSelectionScope(std::optional<RawImage::Channel> chann
         channelWaveformViews[(size_t) *channel].setSelectionSampleRange(range);
     else
         waveformView.setSelectionSampleRange(range);
+}
+
+void MainComponent::clearCurrentSelection()
+{
+    if (workingImage == nullptr)
+        return;
+
+    if (splitModeToggle.getToggleState() && activeSelectionChannel.has_value())
+        channelWaveformViews[(size_t) *activeSelectionChannel].clearSelection();
+    else
+        waveformView.clearSelection();
 }
 
 void MainComponent::setSplitMode(bool enabled)

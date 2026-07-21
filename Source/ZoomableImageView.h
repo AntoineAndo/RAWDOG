@@ -36,6 +36,12 @@ public:
     // empty preview area as a shortcut into its own "load image" action.
     std::function<void()> onClickWithNoImage;
 
+    // Fired on a plain click while an image IS loaded (the complement of
+    // onClickWithNoImage above) -- lets a host clear an unrelated selection
+    // (e.g. a waveform time-range selection) when the user clicks the image,
+    // without this class itself knowing anything about selections.
+    std::function<void()> onClick;
+
     // Trades resample quality for speed while rapid setImage() refreshes are
     // expected (a live-preview session delivering results several times a
     // second): the cachedRender rebuild's drawImageTransformed() uses
