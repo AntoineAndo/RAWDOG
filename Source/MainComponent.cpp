@@ -25,6 +25,30 @@ MainComponent::MainComponent()
     imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
     imagePreview.onClick = [this] { clearCurrentSelection(); };
 
+    imagePreview.onHighlightRegionDragStart = [this]
+    {
+        // Same "don't push an undo entry mid-live-preview-session" rationale
+        // as waveformView.onBeforeSelectionChange below.
+        if (pluginEditorPanel == nullptr)
+            pushUndoState();
+    };
+
+    imagePreview.onHighlightRegionChanged = [this](juce::Range<int> rowRange)
+    {
+        if (workingImage == nullptr)
+            return;
+
+        const auto scope = getCurrentSelectionScope();
+        const auto newRange = scope.channel.has_value()
+            ? workingImage->rowRangeToChannelHighlightSampleRange(rowRange)
+            : workingImage->rowRangeToHighlightByteRange(rowRange);
+
+        if (splitModeToggle.getToggleState() && activeSelectionChannel.has_value())
+            channelWaveformViews[(size_t) *activeSelectionChannel].setSelectionSampleRange(newRange);
+        else
+            waveformView.setSelectionSampleRange(newRange);
+    };
+
     horizontalScrollBar.addListener(this);
     waveformView.onViewChanged = [this] { syncScrollBarToView(); };
     waveformView.onSelectionChanged = [this] { triggerAsyncUpdate(); };

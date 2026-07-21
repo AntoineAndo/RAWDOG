@@ -226,16 +226,11 @@ void MainComponent::updateHighlightOverlay(const RawImage& image, const Selectio
 
     if (! overlay.has_value())
     {
-        imagePreview.setHighlightLines(std::nullopt, colour);
+        imagePreview.setHighlightRegion(std::nullopt, colour);
         return;
     }
 
-    const juce::Line<float> topLine((float) overlay->topStartColumn, (float) overlay->topRow + 0.5f,
-                                     (float) overlay->topEndColumn, (float) overlay->topRow + 0.5f);
-    const juce::Line<float> bottomLine((float) overlay->bottomStartColumn, (float) overlay->bottomRow + 0.5f,
-                                        (float) overlay->bottomEndColumn, (float) overlay->bottomRow + 0.5f);
-
-    imagePreview.setHighlightLines(std::make_pair(topLine, bottomLine), colour);
+    imagePreview.setHighlightRegion(juce::Range<int>(overlay->topRow, overlay->bottomRow + 1), colour);
 }
 
 void MainComponent::updateWaveform(bool resetView)

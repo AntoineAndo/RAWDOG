@@ -211,6 +211,15 @@ public:
     // in the interleaved buffer — for a channel-scoped waveform selection.
     std::optional<HighlightOverlay> computeChannelHighlightOverlay(juce::Range<int> highlightPlaneSampleRange) const;
 
+    // Exact inverses of the two functions above -- lets a caller that only has
+    // an image-row range (e.g. the image preview's own draggable highlight
+    // rectangle, dragged directly in row space) convert back into whichever
+    // sample-range representation the corresponding waveform selection uses.
+    // rowRange follows the same half-open juce::Range convention as
+    // getSelectionSampleRange() -- i.e. [firstRow, lastRow + 1).
+    juce::Range<int> rowRangeToHighlightByteRange(juce::Range<int> rowRange) const;
+    juce::Range<int> rowRangeToChannelHighlightSampleRange(juce::Range<int> rowRange) const;
+
     enum class Format { bmp, pnmBinary, pnmGray, png, jpeg };
 
     // What format this image was actually loaded from (BMP vs PNM) — used

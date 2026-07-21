@@ -1158,6 +1158,17 @@ std::optional<RawImage::HighlightOverlay> RawImage::computeHighlightOverlay(juce
     return overlay;
 }
 
+juce::Range<int> RawImage::rowRangeToHighlightByteRange(juce::Range<int> rowRange) const
+{
+    const int rowBytes = width * channels;
+    return { rowRange.getStart() * rowBytes, rowRange.getEnd() * rowBytes };
+}
+
+juce::Range<int> RawImage::rowRangeToChannelHighlightSampleRange(juce::Range<int> rowRange) const
+{
+    return { rowRange.getStart() * width, rowRange.getEnd() * width };
+}
+
 std::optional<RawImage::HighlightOverlay> RawImage::computeChannelHighlightOverlay(juce::Range<int> highlightPlaneSampleRange) const
 {
     if (highlightPlaneSampleRange.isEmpty())

@@ -1,5 +1,6 @@
 #include "ZoomableImageView.h"
 #include "PixelBenderLookAndFeel.h"
+#include <cmath>
 
 void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
 {
@@ -12,10 +13,19 @@ void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
     repaint();
 }
 
-void ZoomableImageView::setHighlightLines(std::optional<std::pair<juce::Line<float>, juce::Line<float>>> lines, juce::Colour colour)
+void ZoomableImageView::setHighlightRegion(std::optional<juce::Range<int>> imageRowRange, juce::Colour colour)
 {
-    highlightLines = lines;
+    highlightRegion = imageRowRange.has_value()
+        ? std::optional<HighlightRegion>({ imageRowRange->getStart(), imageRowRange->getEnd() - 1 })
+        : std::nullopt;
     highlightColour = colour;
+
+    if (! highlightRegion.has_value())
+    {
+        hoveringHighlightRegion = false;
+        highlightDragMode = HighlightDragMode::none;
+    }
+
     repaint();
 }
 
@@ -53,17 +63,30 @@ void ZoomableImageView::paint(juce::Graphics& g)
     ensureCachedRenderUpToDate();
     g.drawImageAt(cachedRender, 0, 0);
 
-    if (highlightLines.has_value())
+    if (highlightRegion.has_value())
     {
-        const auto transform = getImageToScreenTransform();
-        auto top = highlightLines->first;
-        auto bottom = highlightLines->second;
-        top.applyTransform(transform);
-        bottom.applyTransform(transform);
+        const auto screenRect = getHighlightRegionScreenBounds();
+        const bool activeTint = hoveringHighlightRegion || highlightDragMode != HighlightDragMode::none;
 
-        g.setColour(highlightColour);
-        g.drawLine(top, 2.0f);
-        g.drawLine(bottom, 2.0f);
+        g.setColour(highlightColour.withAlpha(activeTint ? 0.28f : 0.0f));
+        g.fillRect(screenRect);
+        g.setColour(highlightColour.withAlpha(activeTint ? 0.9f : 0.6f));
+        g.drawRect(screenRect, 1.5f);
+
+        // Handle bars at each edge: a thicker line plus a small centred grip
+        // pill, full width -- the vertical-drag equivalent of WaveformView's
+        // own selection-handle grip marks.
+        constexpr float pillWidth = 28.0f, pillHeight = 5.0f;
+        const float cx = screenRect.getCentreX();
+
+        for (const float y : { screenRect.getY(), screenRect.getBottom() })
+        {
+            g.setColour(highlightColour.withAlpha(activeTint ? 0.9f : 0.6f));
+            g.drawLine(screenRect.getX(), y, screenRect.getRight(), y, 2.0f);
+
+            g.setColour(juce::Colours::white);
+            g.fillRoundedRectangle(juce::Rectangle<float>(pillWidth, pillHeight).withCentre({ cx, y }), pillHeight * 0.5f);
+        }
     }
 }
 
@@ -102,6 +125,28 @@ juce::AffineTransform ZoomableImageView::getImageToScreenTransform() const
     return juce::AffineTransform::scale(scale).translated(offset.x, offset.y);
 }
 
+juce::Rectangle<float> ZoomableImageView::getHighlightRegionScreenBounds() const
+{
+    if (! highlightRegion.has_value())
+        return {};
+
+    // Confined to the image's own rendered width (not the full component) --
+    // both the visual band AND the hit-test in mouseDown/mouseMove (which
+    // checks e.position.x against this same rect) should stop at the image's
+    // actual edges, not the wider preview panel.
+    const juce::Rectangle<float> imageRect(0.0f, (float) highlightRegion->topRow,
+                                            (float) image.getWidth(),
+                                            (float) (highlightRegion->bottomRow - highlightRegion->topRow + 1));
+    return imageRect.transformedBy(getImageToScreenTransform());
+}
+
+int ZoomableImageView::screenYToImageRow(float screenY) const
+{
+    juce::Point<float> point(0.0f, screenY);
+    point.applyTransform(getImageToScreenTransform().inverted());
+    return juce::jlimit(0, juce::jmax(0, image.getHeight() - 1), (int) std::floor(point.y));
+}
+
 void ZoomableImageView::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
 {
     if (! image.isValid())
@@ -123,7 +168,7 @@ void ZoomableImageView::mouseMagnify(const juce::MouseEvent& e, float scaleFacto
     applyZoom(scaleFactor, e.position);
 }
 
-void ZoomableImageView::mouseDown(const juce::MouseEvent&)
+void ZoomableImageView::mouseDown(const juce::MouseEvent& e)
 {
     if (! image.isValid())
     {
@@ -132,12 +177,147 @@ void ZoomableImageView::mouseDown(const juce::MouseEvent&)
         return;
     }
 
+    if (highlightRegion.has_value())
+    {
+        const auto screenRect = getHighlightRegionScreenBounds();
+
+        // Horizontally confined to the image's own bounds -- unlike the y
+        // checks below, this IS an x test: the rectangle (and its
+        // interactive target) shouldn't grab a click that's outside the
+        // image just because it's at the same row level as the selection.
+        const bool withinImageX = e.position.x >= screenRect.getX() && e.position.x <= screenRect.getRight();
+
+        if (withinImageX && std::abs(e.position.y - screenRect.getY()) <= (float) handleGrabPixels)
+        {
+            if (onHighlightRegionDragStart != nullptr)
+                onHighlightRegionDragStart();
+
+            highlightDragMode = HighlightDragMode::resizingTop;
+            dragAnchorRow = highlightRegion->bottomRow;
+            repaint();
+            return;
+        }
+
+        if (withinImageX && std::abs(e.position.y - screenRect.getBottom()) <= (float) handleGrabPixels)
+        {
+            if (onHighlightRegionDragStart != nullptr)
+                onHighlightRegionDragStart();
+
+            highlightDragMode = HighlightDragMode::resizingBottom;
+            dragAnchorRow = highlightRegion->topRow;
+            repaint();
+            return;
+        }
+
+        if (withinImageX && e.position.y > screenRect.getY() && e.position.y < screenRect.getBottom())
+        {
+            if (onHighlightRegionDragStart != nullptr)
+                onHighlightRegionDragStart();
+
+            highlightDragMode = HighlightDragMode::movingRegion;
+            dragMoveLengthRows = highlightRegion->bottomRow - highlightRegion->topRow;
+            dragMoveOffsetRows = screenYToImageRow(e.position.y) - highlightRegion->topRow;
+            repaint();
+            return;
+        }
+    }
+
+    highlightDragMode = HighlightDragMode::none;
+
     if (onClick != nullptr)
         onClick();
 }
 
-void ZoomableImageView::mouseDrag(const juce::MouseEvent&)
+void ZoomableImageView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (highlightDragMode == HighlightDragMode::none || ! highlightRegion.has_value())
+        return;
+
+    const int lastRow = juce::jmax(0, image.getHeight() - 1);
+    const int cursorRow = screenYToImageRow(e.position.y);
+
+    switch (highlightDragMode)
+    {
+        case HighlightDragMode::resizingTop:
+        {
+            // jmax guards against an inverted jlimit range when the anchor
+            // sits at (or near) row 0 -- same rationale as WaveformView's
+            // resizingLeft guard.
+            const int upperBound = juce::jmax(0, dragAnchorRow - 1);
+            highlightRegion->topRow = juce::jlimit(0, upperBound, cursorRow);
+            highlightRegion->bottomRow = dragAnchorRow;
+            break;
+        }
+
+        case HighlightDragMode::resizingBottom:
+        {
+            const int lowerBound = juce::jmin(lastRow, dragAnchorRow + 1);
+            highlightRegion->bottomRow = juce::jlimit(lowerBound, lastRow, cursorRow);
+            highlightRegion->topRow = dragAnchorRow;
+            break;
+        }
+
+        case HighlightDragMode::movingRegion:
+        {
+            const int upperBound = juce::jmax(0, lastRow - dragMoveLengthRows);
+            const int newTop = juce::jlimit(0, upperBound, cursorRow - dragMoveOffsetRows);
+            highlightRegion->topRow = newTop;
+            highlightRegion->bottomRow = newTop + dragMoveLengthRows;
+            break;
+        }
+
+        case HighlightDragMode::none:
+        default:
+            return;
+    }
+
+    if (onHighlightRegionChanged != nullptr)
+        onHighlightRegionChanged({ highlightRegion->topRow, highlightRegion->bottomRow + 1 });
+
+    repaint();
+}
+
+void ZoomableImageView::mouseUp(const juce::MouseEvent&)
+{
+    highlightDragMode = HighlightDragMode::none;
+    repaint();
+}
+
+void ZoomableImageView::mouseMove(const juce::MouseEvent& e)
+{
+    if (! image.isValid() || ! highlightRegion.has_value())
+    {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+
+        if (hoveringHighlightRegion)
+        {
+            hoveringHighlightRegion = false;
+            repaint();
+        }
+
+        return;
+    }
+
+    const auto screenRect = getHighlightRegionScreenBounds();
+    const bool withinImageX = e.position.x >= screenRect.getX() && e.position.x <= screenRect.getRight();
+    const bool onEdge = withinImageX
+                        && (std::abs(e.position.y - screenRect.getY()) <= (float) handleGrabPixels
+                            || std::abs(e.position.y - screenRect.getBottom()) <= (float) handleGrabPixels);
+    const bool inBody = withinImageX && e.position.y > screenRect.getY() && e.position.y < screenRect.getBottom();
+
+    if (onEdge)
+        setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+    else if (inBody)
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    else
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+
+    const bool nowHovering = onEdge || inBody;
+    if (nowHovering != hoveringHighlightRegion)
+    {
+        hoveringHighlightRegion = nowHovering;
+        repaint();
+    }
 }
 
 void ZoomableImageView::mouseDoubleClick(const juce::MouseEvent&)

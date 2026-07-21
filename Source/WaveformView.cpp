@@ -202,12 +202,16 @@ void WaveformView::paint(juce::Graphics& g)
         g.setColour(palette.gold);
         g.drawRect(selectionRect, 1.0f);
 
-        // Small grip marks at each edge so the resize handles are visually
-        // discoverable, not just an invisible hit zone found by hovering.
-        constexpr float gripWidth = 3.0f;
+        // White grip handles at each edge -- same pill-shaped marker as
+        // ZoomableImageView's highlight-region edge handles (rotated: a
+        // vertical pill here, a horizontal one there), so the two selection
+        // affordances read as one consistent interaction language.
+        constexpr float pillLength = 28.0f, pillThickness = 5.0f;
+        const float cy = height * 0.5f;
+
         g.setColour(juce::Colours::white);
-        g.fillRect(juce::Rectangle<float>(x1 - gripWidth * 0.5f, 0.0f, gripWidth, height));
-        g.fillRect(juce::Rectangle<float>(x2 - gripWidth * 0.5f, 0.0f, gripWidth, height));
+        for (const float x : { x1, x2 })
+            g.fillRoundedRectangle(juce::Rectangle<float>(pillThickness, pillLength).withCentre({ x, cy }), pillThickness * 0.5f);
     }
 }
 
