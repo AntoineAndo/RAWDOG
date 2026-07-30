@@ -13,9 +13,9 @@ public:
     FavouritePluginsStore()
     {
         juce::PropertiesFile::Options options;
-        options.applicationName = "PixelBender";
+        options.applicationName = "RAWDOG";
         options.filenameSuffix = "settings";
-        options.folderName = "PixelBender";
+        options.folderName = "RAWDOG";
         options.osxLibrarySubFolder = "Application Support";
         options.millisecondsBeforeSaving = 0; // write immediately
         appProperties.setStorageParameters(options);

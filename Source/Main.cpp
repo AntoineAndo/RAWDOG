@@ -1,15 +1,24 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
+#if JUCE_MAC
+ #include "MacAppearance.h"
+#endif
 
-class PixelBenderApplication : public juce::JUCEApplication
+class RawdogApplication : public juce::JUCEApplication
 {
 public:
-    const juce::String getApplicationName() override { return "Pixel Bender"; }
+    const juce::String getApplicationName() override { return "RAWDOG"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
 
     void initialise(const juce::String&) override
     {
+#if JUCE_MAC
+        // The Platinum chrome is a fixed light theme, not a light/dark pair --
+        // without this, the native title bar follows system dark mode and
+        // renders near-black, clashing with the app's own grey chrome below it.
+        forceLightAppearance();
+#endif
         juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel);
         mainWindow.reset(new MainWindow(getApplicationName()));
 
@@ -41,11 +50,14 @@ public:
     // ResizableWindow::getWindowStateAsString()/restoreWindowStateFromString()'s
     // own opaque encoding -- not the properties/settings file JUCE apps
     // typically use for this, since that needs the juce_data_structures
-    // module, which this project doesn't otherwise link.
+    // module, which this project doesn't otherwise link. Same
+    // "~/Library/Application Support/RAWDOG/" folder every other persisted
+    // file (favourites, presets, the plugin scan cache) lives in.
     static juce::File getWindowStateFileLocation()
     {
         return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-            .getChildFile("Pixel Bender")
+            .getChildFile("Application Support")
+            .getChildFile("RAWDOG")
             .getChildFile("window-state.txt");
     }
 
@@ -93,14 +105,14 @@ public:
         // actually owns and deletes it, as part of DocumentWindow's own
         // destructor. Kept here only so systemRequestedQuit() has a handle to
         // call confirmQuit() on; safe to use right up until mainWindow itself
-        // is torn down in PixelBenderApplication::shutdown(), well after any
+        // is torn down in RawdogApplication::shutdown(), well after any
         // quit-confirmation dialog this points at would have closed.
         MainComponent* mainComponent = nullptr;
     };
 
 private:
-    PixelBenderLookAndFeel lookAndFeel;
+    RawdogLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-START_JUCE_APPLICATION(PixelBenderApplication)
+START_JUCE_APPLICATION(RawdogApplication)

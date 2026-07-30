@@ -158,6 +158,7 @@ void MainComponent::loadImageClicked()
                                                      std::move(result->waveformPeaks));
                         self->imagePreview.setImage(self->workingImage->toJuceImage(), true);
                         self->updateHighlightOverlay(*self->workingImage, self->getCurrentSelectionScope());
+                        self->updateImageSizeLabel(*self->workingImage);
 
                         self->finishImageLoad("Loaded " + result->fileName + " ("
                                               + juce::String(self->workingImage->pixelBytes.getSize())
@@ -212,6 +213,16 @@ void MainComponent::updatePreview(bool resetView)
 
     imagePreview.setImage(workingImage->toJuceImage(), resetView);
     updateHighlightOverlay(*workingImage, getCurrentSelectionScope());
+    updateImageSizeLabel(*workingImage);
+}
+
+void MainComponent::updateImageSizeLabel(const RawImage& image)
+{
+    const auto megabytes = (double) image.pixelBytes.getSize() / (1024.0 * 1024.0);
+
+    imageSizeLabel.setText(juce::String(image.getWidth()) + " x " + juce::String(image.getHeight())
+                               + "  -  " + juce::String(megabytes, 1) + " MB",
+                           juce::dontSendNotification);
 }
 
 void MainComponent::updateHighlightOverlay(const RawImage& image, const SelectionScope& scope)

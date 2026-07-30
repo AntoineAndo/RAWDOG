@@ -79,6 +79,7 @@ void MainComponent::refreshHeaderLivePreview(const RawImage::BmpEditableHeaderFi
     imagePreview.setImage(headerEditScratch->toJuceImage(), false);
     // No channel ever applies here -- split mode is force-disabled during header editing.
     updateHighlightOverlay(*headerEditScratch, { std::nullopt, waveformView.getSelectionSampleRange() });
+    updateImageSizeLabel(*headerEditScratch); // width/height/bitcount are directly editable here
 }
 
 void MainComponent::applyHeaderEditClicked()

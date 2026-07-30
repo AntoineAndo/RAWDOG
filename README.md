@@ -36,6 +36,6 @@ Ramp a plugin parameter across the selection instead of setting it static
 
 ```bash
 cmake -B build -G Xcode
-cmake --build build --config Release --target PixelBender
-open "build/PixelBender_artefacts/Release/Pixel Bender.app"
+cmake --build build --config Release --target RAWDOG
+open "build/RAWDOG_artefacts/Release/RAWDOG.app"
 ```

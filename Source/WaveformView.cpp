@@ -1,5 +1,5 @@
 #include "WaveformView.h"
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
 
 void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView,
                              std::optional<WaveformPeaks::Partial> precomputedPeaks)
@@ -191,27 +191,34 @@ void WaveformView::paint(juce::Graphics& g)
 
     if (hasSelection)
     {
-        const auto& palette = PixelBenderLookAndFeel::Palette::get();
+        const auto& palette = RawdogLookAndFeel::Palette::get();
         const float height = (float) getHeight();
         const float x1 = (float) sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
         const float x2 = (float) sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
         auto selectionRect = juce::Rectangle<float>(x1, 0.0f, x2 - x1, height);
 
-        g.setColour(palette.gold.withAlpha(0.22f));
+        g.setColour(palette.ink.withAlpha(0.15f));
         g.fillRect(selectionRect);
-        g.setColour(palette.gold);
+        g.setColour(palette.ink);
         g.drawRect(selectionRect, 1.0f);
 
-        // White grip handles at each edge -- same pill-shaped marker as
-        // ZoomableImageView's highlight-region edge handles (rotated: a
-        // vertical pill here, a horizontal one there), so the two selection
-        // affordances read as one consistent interaction language.
+        // White grip handles (with a thin black outline so they stay visible
+        // against the now-white waveform lane) at each edge -- same
+        // pill-shaped marker as ZoomableImageView's highlight-region edge
+        // handles (rotated: a vertical pill here, a horizontal one there), so
+        // the two selection affordances read as one consistent interaction
+        // language.
         constexpr float pillLength = 28.0f, pillThickness = 5.0f;
         const float cy = height * 0.5f;
 
-        g.setColour(juce::Colours::white);
         for (const float x : { x1, x2 })
-            g.fillRoundedRectangle(juce::Rectangle<float>(pillThickness, pillLength).withCentre({ x, cy }), pillThickness * 0.5f);
+        {
+            auto pill = juce::Rectangle<float>(pillThickness, pillLength).withCentre({ x, cy });
+            g.setColour(juce::Colours::white);
+            g.fillRoundedRectangle(pill, pillThickness * 0.5f);
+            g.setColour(palette.ink);
+            g.drawRoundedRectangle(pill, pillThickness * 0.5f, 1.0f);
+        }
     }
 }
 
@@ -229,10 +236,10 @@ void WaveformView::ensureCachedTraceUpToDate()
     if (cachedTrace.getWidth() != w || cachedTrace.getHeight() != h)
         cachedTrace = juce::Image(juce::Image::RGB, w, h, false);
 
-    const auto& palette = PixelBenderLookAndFeel::Palette::get();
+    const auto& palette = RawdogLookAndFeel::Palette::get();
 
     juce::Graphics cg(cachedTrace);
-    cg.fillAll(palette.background);
+    cg.fillAll(palette.surface);
 
     const int width = w;
     const int height = h;
@@ -253,7 +260,7 @@ void WaveformView::ensureCachedTraceUpToDate()
     {
         const auto* samples = waveformData.getReadPointer(0);
 
-        cg.setColour(palette.waveform);
+        cg.setColour(palette.ink);
 
         for (int x = 0; x < width; ++x)
         {
@@ -282,7 +289,7 @@ void WaveformView::ensureCachedTraceUpToDate()
     }
     else
     {
-        cg.setColour(palette.textSecondary);
+        cg.setColour(palette.inkMuted);
         cg.drawText("Load an image to see its waveform", cachedTrace.getBounds(), juce::Justification::centred);
     }
 

@@ -1,5 +1,5 @@
 #include "ZoomableImageView.h"
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
 #include <cmath>
 
 void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
@@ -53,9 +53,8 @@ void ZoomableImageView::paint(juce::Graphics& g)
 {
     if (! image.isValid())
     {
-        const auto& palette = PixelBenderLookAndFeel::Palette::get();
-        g.fillAll(palette.background);
-        g.setColour(palette.textSecondary);
+        RawdogLookAndFeel::drawDotMat(g, getLocalBounds());
+        g.setColour(RawdogLookAndFeel::Palette::get().inkMuted);
         g.drawText("Click to load an image", getLocalBounds(), juce::Justification::centred);
         return;
     }
@@ -84,8 +83,11 @@ void ZoomableImageView::paint(juce::Graphics& g)
             g.setColour(highlightColour.withAlpha(activeTint ? 0.9f : 0.6f));
             g.drawLine(screenRect.getX(), y, screenRect.getRight(), y, 2.0f);
 
+            auto pill = juce::Rectangle<float>(pillWidth, pillHeight).withCentre({ cx, y });
             g.setColour(juce::Colours::white);
-            g.fillRoundedRectangle(juce::Rectangle<float>(pillWidth, pillHeight).withCentre({ cx, y }), pillHeight * 0.5f);
+            g.fillRoundedRectangle(pill, pillHeight * 0.5f);
+            g.setColour(RawdogLookAndFeel::Palette::get().ink);
+            g.drawRoundedRectangle(pill, pillHeight * 0.5f, 1.0f);
         }
     }
 }
@@ -106,7 +108,24 @@ void ZoomableImageView::ensureCachedRenderUpToDate()
         cachedRender = juce::Image(juce::Image::RGB, w, h, false);
 
     juce::Graphics cg(cachedRender);
-    cg.fillAll(PixelBenderLookAndFeel::Palette::get().background); // letterboxing when the image doesn't fill the viewport
+    // Halftone mat, not a flat fill -- shows through as letterboxing wherever
+    // the image doesn't fill the viewport (fit-to-view margins, zoomed-out
+    // pan).
+    RawdogLookAndFeel::drawDotMat(cg, cachedRender.getBounds());
+
+    const auto& palette = RawdogLookAndFeel::Palette::get();
+    const auto imageRect = juce::Rectangle<float>(0.0f, 0.0f, (float) image.getWidth(), (float) image.getHeight())
+                                .transformedBy(getImageToScreenTransform());
+
+    // Hard offset drop shadow behind the image canvas itself -- not the whole
+    // dot-matted viewport, which can be larger than the image at less than
+    // 100% zoom -- matching the mockup's 1-bit `2px 2px 0 #000` shadow
+    // convention. Drawn before the image (and re-baked here, not in paint(),
+    // since it must track the image's current screen position/scale) so the
+    // image itself, drawn next, covers all but the peeking bottom-right edge.
+    constexpr float shadowOffset = 4.0f;
+    cg.setColour(palette.ink);
+    cg.fillRect(imageRect.translated(shadowOffset, shadowOffset));
 
     // Nearest-neighbour while a live-preview session is delivering rapid
     // refreshes -- see setFastResampling()'s doc comment. On macOS this maps
@@ -117,6 +136,12 @@ void ZoomableImageView::ensureCachedRenderUpToDate()
         cg.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
 
     cg.drawImageTransformed(image, getImageToScreenTransform(), false);
+
+    // Frames the image canvas so it reads as a bounded surface rather than
+    // bleeding straight into the dot-matted mat around it.
+    cg.setColour(palette.ink);
+    cg.drawRect(imageRect, 1.0f);
+
     cachedRenderValid = true;
 }
 

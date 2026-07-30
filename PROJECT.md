@@ -1,4 +1,7 @@
-# Pixel Bender — Project Handoff
+# RAWDOG — Project Handoff
+
+**R**aw **A**udio **W**aveform **D**atabending & **O**utput **G**litcher —
+renamed from "Pixel Bender" (see Milestones below for the rename itself).
 
 ## What this is
 
@@ -10,7 +13,7 @@ but built as a dedicated tool: browse installed plugins, tweak them with their r
 UI, select a specific byte range to glitch instead of the whole image, and preview
 the result live.
 
-Repo: `~/Documents/Projects/pixel-bender` (git, `main` branch, JUCE as a pinned
+Repo: `~/Documents/Projects/rawdog` (git, `main` branch, JUCE as a pinned
 submodule at `JUCE/`).
 
 ## Stack and why
@@ -24,20 +27,20 @@ submodule at `JUCE/`).
 - **macOS only**, VST3 + AudioUnit hosting (`JUCE_PLUGINHOST_VST3=1`,
   `JUCE_PLUGINHOST_AU=1`). No Windows/VST2 support — VST2 SDK is deprecated and
   wasn't worth the licensing hassle for this project.
-- Target: `PixelBender` (a `juce_add_gui_app`). Building produces
-  `build/PixelBender_artefacts/Debug/Pixel Bender.app`.
+- Target: `RAWDOG` (a `juce_add_gui_app`). Building produces
+  `build/RAWDOG_artefacts/Debug/RAWDOG.app`.
 
 ## Build & run
 
 ```bash
 cmake -B build -G Xcode          # configure (only needed after CMakeLists.txt changes)
-cmake --build build --config Debug --target PixelBender
-open "build/PixelBender_artefacts/Debug/Pixel Bender.app"
+cmake --build build --config Debug --target RAWDOG
+open "build/RAWDOG_artefacts/Debug/RAWDOG.app"
 ```
 
 To see stdout/DBG output live, run the binary directly instead of `open`:
 ```bash
-"build/PixelBender_artefacts/Debug/Pixel Bender.app/Contents/MacOS/Pixel Bender"
+"build/RAWDOG_artefacts/Debug/RAWDOG.app/Contents/MacOS/RAWDOG"
 ```
 
 No test suite exists. Verification so far has been manual (the human tester) plus
@@ -238,7 +241,7 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
    machine: found 44 plugins (2 user-installed VST3+AU pairs, ~40 Apple built-in AUs).
    - **Scans are cached to disk, not repeated on every launch.** `loadCachedPluginList()`/
      `saveCachedPluginListToDisk()` persist `KnownPluginList::createXml()`/
-     `recreateFromXml()` to `~/Library/Application Support/PixelBender/KnownPlugins.xml`.
+     `recreateFromXml()` to `~/Library/Application Support/RAWDOG/KnownPlugins.xml`.
      `MainComponent`'s constructor tries loading that cache first; only a genuine
      first-ever launch (no cache file yet) falls back to a real scan. "Rescan
      Plugins" always does a real scan regardless, and re-saves the cache afterward —
@@ -248,7 +251,7 @@ untouched"), recreate this pattern rather than trying to test through the GUI.
      MeldaProduction VST3s — a race between the plugin's internal `OnTimer()` and
      JUCE destroying the probed instance mid-scan) crash the whole app when
      `PluginDirectoryScanner` probes them. `ScanThread` passes a real dead man's
-     pedal file (`~/Library/Application Support/PixelBender/DeadMansPedal.txt`,
+     pedal file (`~/Library/Application Support/RAWDOG/DeadMansPedal.txt`,
      not `juce::File()`) to the scanner, so a crash mid-probe is recorded there;
      the next scan sees the still-present entry and blacklists that plugin instead
      of re-probing it — turning an infinite crash-loop-on-rescan into a one-time
@@ -1258,8 +1261,8 @@ purely as a structural refactor with no behavior change:
   operations, the `thread_local` feedback-loop guard that replaced
   `ScopedWatcherPause`, and the throttled-delivery timer).
 - *(user-requested polish)* — **a real visual theme.** Replaced JUCE's default
-  flat-grey `LookAndFeel` with `PixelBenderLookAndFeel`/
-  `PixelBenderLookAndFeel::Palette` (dark neutral background/surface colours,
+  flat-grey `LookAndFeel` with `RawdogLookAndFeel`/
+  `RawdogLookAndFeel::Palette` (dark neutral background/surface colours,
   a blue accent, rounded tab/button/text-editor chrome), installed globally
   via `juce::LookAndFeel::setDefaultLookAndFeel()`. Every hand-painted
   component (`PluginListModel`, `WaveformView`, `WaveformSectionPanel`,
@@ -1269,15 +1272,18 @@ purely as a structural refactor with no behavior change:
   icon and a clear ("×") button (shown only once text is entered), replacing
   a bare `juce::TextEditor`.
 - *(user-requested feature)* — **window size/position now persists across
-  relaunches.** `PixelBenderApplication` round-trips `DocumentWindow::
+  relaunches.** `RawdogApplication` round-trips `DocumentWindow::
   getWindowStateAsString()`/`restoreWindowStateFromString()` through a plain
   text file, written in `shutdown()` and restored in `initialise()`. **Gotcha
-  hit and fixed**: the file ended up at `~/Library/Pixel Bender/`, not
-  `~/Library/Application Support/Pixel Bender/` as first assumed —
-  `juce::File::userApplicationDataDirectory` resolves to `~/Library` directly
-  on macOS (confirmed via JUCE source, `juce_Files_mac.mm`), matching
-  `PluginScanner`'s existing folder convention, which apps must append
-  "Application Support" (or not) to themselves rather than getting it for free.
+  hit and fixed**: the file initially ended up at `~/Library/Pixel Bender/`
+  (this app's old name), not `~/Library/Application Support/Pixel Bender/` as
+  first assumed — `juce::File::userApplicationDataDirectory` resolves to
+  `~/Library` directly on macOS (confirmed via JUCE source,
+  `juce_Files_mac.mm`), which apps must append "Application Support" (or not)
+  to themselves rather than getting it for free. Folded into the
+  Pixel-Bender-→-RAWDOG rename below: it now lives at
+  `~/Library/Application Support/RAWDOG/`, matching `PluginScanner`'s and
+  every other persisted-state file's folder exactly.
 - *(user-requested feature)* — **Cmd+O (Load Image) and a new Cmd+Shift+R
   (Reset to Original)** are now real `ApplicationCommand`s added to their
   File-menu items via `menu.addCommandItem()` (same treatment Undo/Redo
@@ -1288,7 +1294,7 @@ purely as a structural refactor with no behavior change:
 - *(user-requested feature)* — **a "discard unsaved changes?" confirmation**
   (`MainComponent::confirmDiscardChangesIfNeeded()`, `juce::AlertWindow::
   showAsync` + `MessageBoxOptions::makeOptionsOkCancel`) now gates Load Image,
-  Reset to Original, and quitting the app (`PixelBenderApplication::
+  Reset to Original, and quitting the app (`RawdogApplication::
   systemRequestedQuit()`, which now defers to `quit()` only after this
   confirmation resolves) whenever `undoStack` is non-empty. **Gotcha hit and
   fixed**: `AlertWindow::showAsync`'s callback does not report a plain
@@ -1332,6 +1338,20 @@ purely as a structural refactor with no behavior change:
   fill whatever remains; the panel's max height is also now capped (a fixed
   pixel value, not a proportional one) so it can't grow unbounded in the
   first place.
+- *(user-requested rename)* — **"Pixel Bender" renamed to RAWDOG**
+  (**R**aw **A**udio **W**aveform **D**atabending & **O**utput **G**litcher),
+  a NASA-mission-style backronym the user asked for and then had applied
+  end-to-end: `CMakeLists.txt`'s `project()`/target name/`PRODUCT_NAME`/
+  `COMPANY_NAME`; `PixelBenderApplication` → `RawdogApplication` and
+  `PixelBenderLookAndFeel.h` → `RawdogLookAndFeel.h` (class renamed to
+  match, every hand-painted component's include/reference updated); every
+  persisted-state folder name (`FavouritePluginsStore`, `PluginPresetsStore`,
+  `PluginScanner`'s `getRawdogSupportFolder()`, and the window-state file)
+  unified to `"RAWDOG"` under `~/Library/Application Support/RAWDOG/` — this
+  also fixed a pre-existing inconsistency where the window-state file lived
+  in a differently-named, differently-located folder from every other
+  persisted file (see the entry above). The project directory itself was
+  also renamed, `~/Documents/Projects/pixel-bender` → `~/Documents/Projects/rawdog`.
 
 ## What's NOT done yet (planned)
 

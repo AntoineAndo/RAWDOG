@@ -2,7 +2,7 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "GrippedResizerBar.h"
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
 #include "PluginEditorPanel.h"
 
 // Parents the plugin list and (optionally) the currently-open PluginEditorPanel,
@@ -52,7 +52,7 @@ public:
             editor.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
             editor.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
             editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
-            editor.setTextToShowWhenEmpty("Search plugins...", PixelBenderLookAndFeel::Palette::get().textSecondary);
+            editor.setTextToShowWhenEmpty("Search plugins...", RawdogLookAndFeel::Palette::get().inkMuted);
             editor.onFocusChanged = [this] { repaint(); };
 
             editor.onTextChange = [this]
@@ -97,28 +97,29 @@ public:
 
         void paint(juce::Graphics& g) override
         {
-            const auto& palette = PixelBenderLookAndFeel::Palette::get();
-            auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+            const auto& palette = RawdogLookAndFeel::Palette::get();
+            const float borderWeight = editor.hasKeyboardFocus(true) ? 2.0f : 1.0f;
 
-            g.setColour(palette.surfaceRaised);
-            g.fillRoundedRectangle(bounds, 6.0f);
-            g.setColour(editor.hasKeyboardFocus(true) ? palette.accent : palette.border);
-            g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+            auto fullBounds = getLocalBounds().toFloat();
+            // Inset by half the border's own weight (not a fixed 0.5px) so
+            // the focused (2px) border stays centred on the component edge
+            // instead of overhanging it unevenly on one side.
+            auto bounds = fullBounds.reduced(borderWeight * 0.5f);
 
-            // Hand-drawn rather than a text glyph so it renders crisply and
-            // monochrome at this size regardless of the platform's emoji font.
-            auto glass = iconArea.toFloat().reduced(6.0f);
-            const float diameter = glass.getHeight() * 0.72f;
-            auto circle = juce::Rectangle<float>(diameter, diameter)
-                              .withCentre(glass.getCentre().translated(-diameter * 0.16f, -diameter * 0.16f));
+            g.setColour(palette.surface);
+            g.fillRect(fullBounds);
+            g.setColour(palette.ink);
+            // Double-weight border on focus -- same emphasis motif as
+            // RawdogLookAndFeel's "emphasized" buttons -- is this field's only
+            // focus affordance, since the wrapped editor's own outline colours
+            // are set transparent (this outer box owns the border instead).
+            g.drawRect(bounds, borderWeight);
 
-            g.setColour(palette.textSecondary);
-            g.drawEllipse(circle, 1.5f);
-
-            const juce::Point<float> direction(0.707f, 0.707f);
-            const auto handleStart = circle.getCentre() + direction * (diameter * 0.5f);
-            const auto handleEnd = handleStart + direction * (diameter * 0.42f);
-            g.drawLine({ handleStart, handleEnd }, 1.5f);
+            // Plain "Q" glyph in place of a hand-drawn lens icon, per the
+            // Platinum mockup's search field treatment.
+            g.setColour(palette.inkMuted);
+            g.setFont(RawdogLookAndFeel::chromeFont(11.0f));
+            g.drawText("Q", iconArea, juce::Justification::centred);
         }
 
     private:
@@ -148,9 +149,9 @@ public:
 
             void paint(juce::Graphics& g) override
             {
-                const auto& palette = PixelBenderLookAndFeel::Palette::get();
+                const auto& palette = RawdogLookAndFeel::Palette::get();
                 auto bounds = getLocalBounds().toFloat().reduced(6.0f);
-                g.setColour(isMouseOver() ? palette.textPrimary : palette.textSecondary);
+                g.setColour(isMouseOver() ? palette.ink : palette.inkMuted);
                 g.drawLine({ bounds.getTopLeft(), bounds.getBottomRight() }, 1.5f);
                 g.drawLine({ bounds.getTopRight(), bounds.getBottomLeft() }, 1.5f);
             }
@@ -236,7 +237,12 @@ public:
 
     void resized() override
     {
-        auto area = getLocalBounds();
+        // Padding lives on the panel as a whole -- inset once here so every
+        // child (tabs, search field, list, and the editor panel when open)
+        // shares the same margin from the window frame, rather than each one
+        // carving out its own.
+        constexpr int margin = 8;
+        auto area = getLocalBounds().reduced(margin, margin);
 
         auto tabsArea = area.removeFromTop(28);
         area.removeFromTop(4);

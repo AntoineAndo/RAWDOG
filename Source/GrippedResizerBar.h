@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "RawdogLookAndFeel.h"
 
 // juce::StretchableLayoutResizerBar's default paint() renders a plain flat
 // bar with no affordance hinting that it's draggable -- easy to miss against
@@ -25,7 +26,7 @@ public:
         constexpr float dotSize = 3.0f;
         constexpr float dotSpacing = 6.0f;
 
-        g.setColour(juce::Colours::white.withAlpha(0.35f));
+        g.setColour(RawdogLookAndFeel::Palette::get().ink.withAlpha(0.55f));
 
         const auto centre = getLocalBounds().toFloat().getCentre();
 

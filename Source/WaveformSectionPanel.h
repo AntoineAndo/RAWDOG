@@ -1,7 +1,7 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
 #include "WaveformSplitPanel.h"
 
 // Ports today's fixed-pixel waveform sub-layout (a filled toolbar strip, then
@@ -51,8 +51,18 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.setColour(PixelBenderLookAndFeel::Palette::get().surface);
+        const auto& palette = RawdogLookAndFeel::Palette::get();
+        g.setColour(palette.windowBg);
         g.fillRect(toolbarBounds);
+
+        // Frames the waveform lane so it reads as a bounded surface (same
+        // convention RightColumnPanel uses for the image preview) rather than
+        // its white fill bleeding straight into the grey toolbar/scrollbar
+        // strips around it. Expanded by 1 so the outline sits just outside
+        // the waveform component's own opaque fill rather than being painted
+        // over by it.
+        g.setColour(palette.ink);
+        g.drawRect(waveformBounds.expanded(1), 1);
     }
 
     void resized() override
@@ -76,6 +86,11 @@ public:
         auto scrollbarArea = area.removeFromBottom(16);
         area.removeFromBottom(4);
 
+        // No horizontal inset of its own here -- padding lives on the parent
+        // RightColumnPanel now, which already insets this whole panel's
+        // bounds from the window frame; adding another margin here would
+        // double it up.
+        waveformBounds = area;
         waveformViewRef.setBounds(area);
         splitPanel.setBounds(area);
 
@@ -84,6 +99,7 @@ public:
 
 private:
     juce::Rectangle<int> toolbarBounds;
+    juce::Rectangle<int> waveformBounds;
     juce::Component& waveformViewRef;
     juce::Component& horizontalScrollBarRef;
     WaveformSplitPanel splitPanel;

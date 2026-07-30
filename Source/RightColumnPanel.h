@@ -2,7 +2,7 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "GrippedResizerBar.h"
-#include "PixelBenderLookAndFeel.h"
+#include "RawdogLookAndFeel.h"
 #include "WaveformSectionPanel.h"
 
 // Parents the image preview, a WaveformSectionPanel, and the status label.
@@ -19,9 +19,11 @@ public:
                      juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
                      juce::Button& splitToggleIn,
                      juce::Label& sampleModeLabelIn, juce::ComboBox& sampleModeComboIn,
+                     juce::Label& imageSizeLabelIn,
                      juce::Component& busySpinnerIn)
         : imagePreviewRef(imagePreviewIn), statusLabelRef(statusLabelIn),
           sampleModeLabelRef(sampleModeLabelIn), sampleModeComboRef(sampleModeComboIn),
+          imageSizeLabelRef(imageSizeLabelIn),
           busySpinnerRef(busySpinnerIn),
           waveformSection(waveformViewIn, horizontalScrollBarIn,
                           redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn, splitToggleIn)
@@ -32,6 +34,11 @@ public:
         addAndMakeVisible(statusLabelRef);
         addAndMakeVisible(sampleModeLabelRef);
         addAndMakeVisible(sampleModeComboRef);
+
+        imageSizeLabelRef.setJustificationType(juce::Justification::centredRight);
+        imageSizeLabelRef.setFont(RawdogLookAndFeel::chromeFont(10.0f));
+        imageSizeLabelRef.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
+        addAndMakeVisible(imageSizeLabelRef);
 
         // The spinner manages its own visibility (shown only while a
         // live-preview pass is computing) -- addChildComponent, not
@@ -52,17 +59,31 @@ public:
     // Forwarded down to WaveformSectionPanel — see its own doc comment.
     void updateSplitVisibility() { waveformSection.updateSplitVisibility(); }
 
+    // ZoomableImageView draws its own hard-shadow + border directly around
+    // the actual image canvas (baked into its cached render alongside the
+    // dot-mat background), since only it knows the image's current on-screen
+    // rect at the active zoom/pan -- framing the whole viewport from here (as
+    // an earlier version of this pass did) drew the shadow/border around
+    // empty letterboxed margins too whenever the image didn't fill the
+    // viewport. This paint() only separates the Sample Mode/size strip from
+    // the preview below it.
     void paint(juce::Graphics& g) override
     {
-        // Frames the image viewport so it reads as a bounded surface rather
-        // than bleeding straight into the panel background.
-        g.setColour(PixelBenderLookAndFeel::Palette::get().border);
-        g.drawRect(imagePreviewRef.getBounds().expanded(1), 1);
+        g.setColour(RawdogLookAndFeel::Palette::get().ink);
+        g.drawLine((float) contentBounds.getX(), (float) sampleModeStripBottom,
+                   (float) contentBounds.getRight(), (float) sampleModeStripBottom, 1.0f);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds();
+        // Padding lives on the panel as a whole -- inset once here so the
+        // status strip, Sample Mode/size strip, image preview, and waveform
+        // section all share the same margin from the window frame, rather
+        // than each one carving out its own (WaveformSectionPanel no longer
+        // insets its own waveform lane for this same reason).
+        constexpr int margin = 8;
+        contentBounds = getLocalBounds().reduced(margin, margin);
+        auto area = contentBounds;
 
         auto statusArea = area.removeFromBottom(24);
         area.removeFromBottom(8);
@@ -78,10 +99,15 @@ public:
         // MainComponent shows/hides this pair based on whether the plugin
         // editor panel is open; when hidden, this strip is simply blank.
         auto sampleModeArea = area.removeFromTop(28);
+        sampleModeStripBottom = sampleModeArea.getBottom();
         area.removeFromTop(4);
         sampleModeLabelRef.setBounds(sampleModeArea.removeFromLeft(90));
         sampleModeArea.removeFromLeft(8);
         sampleModeComboRef.setBounds(sampleModeArea.removeFromLeft(110));
+
+        // Right-aligned "1920 x 1080 - 4.2 MB" -- the mockup's top-right
+        // dimension readout -- taking up whatever's left of this strip.
+        imageSizeLabelRef.setBounds(sampleModeArea);
 
         juce::Component* items[] = { &imagePreviewRef, &resizerBar, &waveformSection };
         layout.layOutComponents(items, 3, area.getX(), area.getY(),
@@ -90,10 +116,13 @@ public:
     }
 
 private:
+    juce::Rectangle<int> contentBounds;
+    int sampleModeStripBottom = 0;
     juce::Component& imagePreviewRef;
     juce::Label& statusLabelRef;
     juce::Label& sampleModeLabelRef;
     juce::ComboBox& sampleModeComboRef;
+    juce::Label& imageSizeLabelRef;
     juce::Component& busySpinnerRef;
     WaveformSectionPanel waveformSection;
     juce::StretchableLayoutManager layout;

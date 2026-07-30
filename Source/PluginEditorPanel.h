@@ -3,17 +3,16 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "ParameterAutomationPanel.h"
+#include "RawdogLookAndFeel.h"
 
 // Embeds a plugin's editor in-place (instead of a separate OS popup window),
 // wrapped in a Viewport so any editor size/aspect ratio scrolls cleanly rather
-// than clipping or being force-resized, with "Save as Preset"/Cancel/Apply
-// buttons docked underneath. A small "Editor"/"Automation" tab strip at the
-// top swaps between the native editor and a ParameterAutomationPanel for
-// defining fade-in/fade-out ramps on the plugin's own parameters -- the
-// button strip stays docked at the bottom either way, since Apply always
-// commits whatever the live preview currently reflects and Save as Preset
-// always captures the plugin's current parameter state regardless of which
-// tab is showing.
+// than clipping or being force-resized. A single top strip holds the
+// "Editor"/"Automation" tab switcher on the left and "Save as Preset"/Cancel/
+// Apply on the right, so the buttons stay put regardless of which tab is
+// showing -- Apply always commits whatever the live preview currently
+// reflects and Save as Preset always captures the plugin's current parameter
+// state, neither is specific to the Editor or Automation tab.
 class PluginEditorPanel : public juce::Component
 {
 public:
@@ -40,6 +39,11 @@ public:
         savePresetButton.onClick = std::move(onSaveAsPreset);
         cancelButton.onClick = std::move(onCancel);
         applyButton.onClick = std::move(onApply);
+
+        // Apply is the default/emphasized action of this strip (matching the
+        // Platinum mockup's double-border Apply button) -- purely a paint
+        // hint, not a toggle state.
+        RawdogLookAndFeel::setEmphasized(applyButton);
     }
 
     int getPreferredWidth() const { return editor->getWidth(); }
@@ -49,12 +53,14 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
-        auto buttonStrip = area.removeFromBottom(40).reduced(8);
-        savePresetButton.setBounds(buttonStrip.removeFromLeft(130).reduced(4, 0));
-        applyButton.setBounds(buttonStrip.removeFromRight(buttonStrip.getWidth() / 2).reduced(4, 0));
-        cancelButton.setBounds(buttonStrip.reduced(4, 0));
 
-        modeTabs.setBounds(area.removeFromTop(28));
+        auto topStrip = area.removeFromTop(32).reduced(4);
+        auto buttonArea = topStrip.removeFromRight(260);
+        applyButton.setBounds(buttonArea.removeFromRight(76).reduced(2, 0));
+        cancelButton.setBounds(buttonArea.removeFromRight(76).reduced(2, 0));
+        savePresetButton.setBounds(buttonArea.reduced(2, 0));
+
+        modeTabs.setBounds(topStrip);
 
         viewport.setBounds(area);
         automationPanel.setBounds(area);

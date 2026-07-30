@@ -1,14 +1,14 @@
 #include "PluginScanner.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// Same "~/Library/Application Support/PixelBender/" folder FavouritePluginsStore
+// Same "~/Library/Application Support/RAWDOG/" folder FavouritePluginsStore
 // writes its settings file into — a sibling file there keeps all of this app's
 // persisted state in one place.
-static juce::File getPixelBenderSupportFolder()
+static juce::File getRawdogSupportFolder()
 {
     return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
         .getChildFile("Application Support")
-        .getChildFile("PixelBender");
+        .getChildFile("RAWDOG");
 }
 
 // JUCE's crash-recovery mechanism for plugin scanning: before probing a
@@ -20,7 +20,7 @@ static juce::File getPixelBenderSupportFolder()
 // crash-on-rescan loop into a one-time loss of that single plugin.
 static juce::File getDeadMansPedalFile()
 {
-    return getPixelBenderSupportFolder().getChildFile("DeadMansPedal.txt");
+    return getRawdogSupportFolder().getChildFile("DeadMansPedal.txt");
 }
 
 // Runs PluginDirectoryScanner across every registered format on a background
@@ -140,7 +140,7 @@ bool PluginScanner::isScanning() const
 
 static juce::File getCachedPluginListFile()
 {
-    return getPixelBenderSupportFolder().getChildFile("KnownPlugins.xml");
+    return getRawdogSupportFolder().getChildFile("KnownPlugins.xml");
 }
 
 bool PluginScanner::loadCachedPluginList()

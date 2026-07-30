@@ -233,6 +233,9 @@ public:
     SampleFormat::Mode getSampleMode() const { return sampleMode; }
     void setSampleMode(SampleFormat::Mode newMode) { sampleMode = newMode; }
 
+    int getWidth() const { return width; }
+    int getHeight() const { return height; }
+
     juce::MemoryBlock headerBytes;
     juce::MemoryBlock pixelBytes;
 

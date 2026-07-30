@@ -127,9 +127,9 @@ private:
     // leftIndent regardless of hasPresets so the star's x position never
     // shifts depending on whether this particular plugin has any presets.
     void paintPluginRow(juce::Graphics& g, const juce::PluginDescription& desc, bool isFavourite,
-                        bool hasPresets, bool presetsExpanded, int leftIndent, int width, int height);
+                        bool hasPresets, bool presetsExpanded, bool rowIsSelected, int leftIndent, int width, int height);
 
-    void paintPresetRow(juce::Graphics& g, const juce::String& presetName, int leftIndent, int width, int height);
+    void paintPresetRow(juce::Graphics& g, const juce::String& presetName, bool rowIsSelected, int leftIndent, int width, int height);
 
     // Shows a confirmation dialog (same AlertWindow+MessageBoxOptions
     // convention as MainComponent::confirmDiscardChangesIfNeeded) before

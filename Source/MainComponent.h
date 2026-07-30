@@ -38,7 +38,7 @@ public:
     void getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result) override;
     bool perform(const InvocationInfo& info) override;
 
-    // Called by PixelBenderApplication before actually quitting (from
+    // Called by RawdogApplication before actually quitting (from
     // MainWindow::closeButtonPressed()'s systemRequestedQuit(), or the app
     // menu/Cmd+Q, both of which funnel through the same override) -- routes
     // through the same discard-changes confirmation as Load Image/Reset
@@ -82,6 +82,13 @@ private:
     void pushUndoState();
     void updatePreview(bool resetView = false);
     void updateWaveform(bool resetView = false);
+
+    // Refreshes imageSizeLabel from the given image's current dimensions and
+    // pixel-data byte size -- called wherever the displayed image's identity
+    // can change (load, reset, undo/redo, apply, and the BMP header editor's
+    // width/height fields), not on every live-preview pass (those don't
+    // change dimensions).
+    void updateImageSizeLabel(const RawImage& image);
     void updatePluginListEnablement();
     void sampleModeChanged();
     void syncScrollBarToView();
@@ -196,6 +203,12 @@ private:
     juce::TextButton splitModeToggle { "Split Channels" };
     juce::Label sampleModeLabel { {}, "Sample Mode:" };
     juce::ComboBox sampleModeCombo;
+
+    // Shown top-right of the Sample Mode strip -- "1920 x 1080 - 4.2 MB",
+    // refreshed by updateImageSizeLabel() wherever the displayed image's
+    // dimensions/pixel data can change (load, reset, undo/redo, apply, and
+    // the BMP header editor's width/height fields).
+    juce::Label imageSizeLabel;
     juce::ListBox pluginListBox;
     juce::Label statusLabel;
 
@@ -233,7 +246,7 @@ private:
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
                                     channelWaveformViews[3],
-                                    splitModeToggle, sampleModeLabel, sampleModeCombo, previewBusySpinner };
+                                    splitModeToggle, sampleModeLabel, sampleModeCombo, imageSizeLabel, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
     GrippedResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
