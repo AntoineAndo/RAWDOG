@@ -1,7 +1,10 @@
-<img width="3840" height="1438" alt="Dog reverb" src="https://github.com/user-attachments/assets/2f5d5c39-19b0-46ce-a725-421be3fc1461" />
+
+<img width="7%" alt="rawdog logo-iOS-Default-1024x1024@1x" src="https://github.com/user-attachments/assets/30b1dcbb-b379-4edd-8c48-6a89afd79a41" align="left" />
 
 # **R**aw **A**udio **W**aveform **D**atabending & **O**utput **G**litcher
 An image editing tool to databend image files with audio VST3 plugins
+
+
 
 # Features  
 ## ✂️ Selective glitching 
@@ -39,3 +42,7 @@ cmake -B build -G Xcode
 cmake --build build --config Release --target PixelBender
 open "build/PixelBender_artefacts/Release/Pixel Bender.app"
 ```
+
+
+
+<img width="3840" height="1438" alt="Dog reverb" src="https://github.com/user-attachments/assets/2f5d5c39-19b0-46ce-a725-421be3fc1461" />
