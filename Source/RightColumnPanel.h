@@ -113,6 +113,11 @@ public:
         layout.layOutComponents(items, 3, area.getX(), area.getY(),
                                  area.getWidth(), area.getHeight(),
                                  true /*stacked vertically*/, true /*resizeOtherDimension*/);
+
+        // Stretch the bar's tint out to the panel's true left edge, closing
+        // the notch where it would otherwise stop `margin` short of the
+        // outer vertical resizer bar it meets there.
+        resizerBar.setBounds(resizerBar.getBounds().withLeft(0));
     }
 
 private:

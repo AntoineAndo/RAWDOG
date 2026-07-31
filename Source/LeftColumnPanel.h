@@ -218,6 +218,7 @@ public:
         {
             addAndMakeVisible(*currentPanel);
             resizerBar.setVisible(true);
+            resizerBar.toFront(false);
 
             // Newly-opened (genuinely different) panel: re-seed just this item's
             // preferred size from the plugin's natural editor width, so each new
@@ -262,6 +263,11 @@ public:
         layout.layOutComponents(items, 3, area.getX(), area.getY(),
                                  area.getWidth(), area.getHeight(),
                                  true /*stacked vertically*/, true /*resizeOtherDimension*/);
+
+        // Stretch the bar's tint out to the panel's true right edge, closing
+        // the notch where it would otherwise stop `margin` short of the
+        // outer vertical resizer bar it meets there.
+        resizerBar.setBounds(resizerBar.getBounds().withRight(getWidth()));
     }
 
 private:

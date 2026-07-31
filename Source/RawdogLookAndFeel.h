@@ -57,7 +57,7 @@ public:
 
         setColour(juce::ListBox::backgroundColourId, p.surface);
         setColour(juce::ScrollBar::thumbColourId, p.divider);
-        setColour(juce::ScrollBar::backgroundColourId, p.windowBg);
+        setColour(juce::ScrollBar::backgroundColourId, p.surface);
 
         setColour(juce::TabbedButtonBar::tabOutlineColourId, juce::Colours::transparentBlack);
         setColour(juce::TabbedComponent::outlineColourId, juce::Colours::transparentBlack);
@@ -199,29 +199,40 @@ public:
         g.drawLine(inner.getX(), inner.getY(), inner.getX(), inner.getBottom(), 1.0f);
     }
 
-    // Thin black divider for the draggable panel-split bars (GrippedResizerBar)
-    // -- LookAndFeel_V2's default is a faint radial white/black blob on a
-    // transparent background, which read as invisible against this theme's
-    // flat grey panels. A single centred hairline, not a full-bleed filled
-    // block (too thick/grey to read as a border) and not two separate edge
-    // lines either (that read as a heavy disconnected "||" wherever there was
-    // no neighbouring frame to justify it).
-    void drawStretchableLayoutResizerBar(juce::Graphics& g, int w, int h, bool isVerticalBar,
-                                          bool isMouseOver, bool isMouseDragging) override
+    // LookAndFeel_V4's default drawScrollbar() only paints the thumb (as a
+    // rounded rectangle) and leaves the track untouched, so
+    // ScrollBar::backgroundColourId (set to the white "surface" colour
+    // above) was never actually painted -- the track just showed whatever
+    // was behind the scrollbar. Fill the track explicitly, and draw the
+    // thumb as a hard-edged rectangle rather than the default's rounded
+    // one, matching this theme's flat, hard-cornered widgets elsewhere.
+    void drawScrollbar(juce::Graphics& g, juce::ScrollBar& scrollbar, int x, int y, int width, int height,
+                        bool isScrollbarVertical, int thumbStartPosition, int thumbSize,
+                        bool isMouseOver, bool /*isMouseDown*/) override
+    {
+        g.setColour(scrollbar.findColour(juce::ScrollBar::backgroundColourId));
+        g.fillRect(x, y, width, height);
+
+        juce::Rectangle<int> thumbBounds = isScrollbarVertical
+                                                ? juce::Rectangle<int>(x, thumbStartPosition, width, thumbSize)
+                                                : juce::Rectangle<int>(thumbStartPosition, y, thumbSize, height);
+
+        auto thumbColour = scrollbar.findColour(juce::ScrollBar::thumbColourId);
+        g.setColour(isMouseOver ? thumbColour.brighter(0.25f) : thumbColour);
+        g.fillRect(thumbBounds.reduced(1));
+    }
+
+    // Draggable panel-split bars (GrippedResizerBar) always show the same
+    // faint tint used for the hover/drag state elsewhere, rather than only
+    // appearing on interaction -- gives a permanent but subtle affordance
+    // without a hard black seam across the panels.
+    void drawStretchableLayoutResizerBar(juce::Graphics& g, int w, int h, bool /*isVerticalBar*/,
+                                          bool /*isMouseOver*/, bool isMouseDragging) override
     {
         const auto& p = Palette::get();
 
-        if (isMouseDragging || isMouseOver)
-        {
-            g.setColour(p.ink.withAlpha(isMouseDragging ? 0.25f : 0.12f));
-            g.fillRect(juce::Rectangle<float>(0.0f, 0.0f, (float) w, (float) h));
-        }
-
-        g.setColour(p.ink);
-        if (isVerticalBar)
-            g.drawLine((float) w * 0.5f, 0.0f, (float) w * 0.5f, (float) h, 1.0f);
-        else
-            g.drawLine(0.0f, (float) h * 0.5f, (float) w, (float) h * 0.5f, 1.0f);
+        g.setColour(p.ink.withAlpha(isMouseDragging ? 0.25f : 0.12f));
+        g.fillRect(juce::Rectangle<float>(0.0f, 0.0f, (float) w, (float) h));
     }
 
     // Flat white sunken field: hard black outline plus a single inset

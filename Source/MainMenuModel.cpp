@@ -15,13 +15,14 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
     {
         callbacks.populateFileMenuLoadImageItem(menu);
         menu.addItem(editHeaderMenuItem, "Edit Header...", callbacks.canEditHeader() && ! panelOpen);
-        // Also gated on ! panelOpen: while a plugin's live-preview session is
-        // active, RawImage's render caches (toJuceImage()'s cachedPlainImage)
-        // are being touched by the live-preview worker thread -- see
-        // PROJECT.md's live-preview performance note. Exporting is also more
-        // sensible gated this way anyway: it would otherwise export the
-        // last-committed image, not the current unapplied preview.
-        menu.addItem(exportImageMenuItem, "Export Image...", callbacks.hasWorkingImage() && ! panelOpen);
+        // Gating on ! panelOpen (also covered by exportImageCommand's own
+        // setActive()) matters because while a plugin's live-preview session
+        // is active, RawImage's render caches (toJuceImage()'s
+        // cachedPlainImage) are being touched by the live-preview worker
+        // thread -- see PROJECT.md's live-preview performance note. Exporting
+        // is also more sensible gated this way anyway: it would otherwise
+        // export the last-committed image, not the current unapplied preview.
+        callbacks.populateFileMenuExportItem(menu);
         callbacks.populateFileMenuResetItem(menu);
         menu.addSeparator();
         menu.addItem(rescanPluginsMenuItem, "Rescan Plugins", ! callbacks.isScanning() && ! panelOpen);
@@ -38,7 +39,6 @@ void MainMenuModel::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
 {
     switch (menuItemID)
     {
-        case exportImageMenuItem:    callbacks.onExportImage(); break;
         case rescanPluginsMenuItem:  callbacks.onRescan(); break;
         case editHeaderMenuItem:     callbacks.onEditHeader(); break;
         default: break;

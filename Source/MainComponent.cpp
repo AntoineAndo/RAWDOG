@@ -398,6 +398,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
     commands.add(cancelEditorCommand);
     commands.add(loadImageCommand);
     commands.add(resetCommand);
+    commands.add(exportImageCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -455,6 +456,19 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
                               && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
+        case exportImageCommand:
+            // Backs the File > Export Image... menu item (see menuModel's
+            // populateFileMenuExportItem callback) as well as the Cmd+S
+            // shortcut. Same gating as the item's previous plain-menu
+            // enablement (hasWorkingImage() && ! panelOpen in
+            // MainMenuModel::Callbacks) plus ! imageLoadInProgress, matching
+            // loadImageCommand/resetCommand's treatment above.
+            result.setInfo("Export Image...", "Export the current image as a PNG", "File", 0);
+            result.addDefaultKeypress('s', juce::ModifierKeys::commandModifier);
+            result.setActive(workingImage != nullptr && pluginEditorPanel == nullptr
+                              && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            break;
+
         default:
             break;
     }
@@ -480,6 +494,10 @@ bool MainComponent::perform(const InvocationInfo& info)
 
         case resetCommand:
             confirmDiscardChangesIfNeeded([this] { resetClicked(); });
+            return true;
+
+        case exportImageCommand:
+            exportImageClicked();
             return true;
 
         default: return false;

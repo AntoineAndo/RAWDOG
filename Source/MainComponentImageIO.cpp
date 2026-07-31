@@ -15,6 +15,7 @@ namespace
         WaveformPeaks::Partial waveformPeaks;
         juce::String errorMessage;
         juce::String fileName;
+        juce::String fileBaseName;
     };
 
     // Runs on MainComponent::imageLoaderPool's thread. Touches only its
@@ -108,6 +109,7 @@ void MainComponent::loadImageFile(const juce::File& file)
         {
             auto result = std::make_shared<LoadedImage>();
             result->fileName = file.getFileName();
+            result->fileBaseName = file.getFileNameWithoutExtension();
             loadImageOffThread(file, *result);
 
             // Two guards, both needed: the alive token covers the
@@ -138,6 +140,7 @@ void MainComponent::loadImageFile(const juce::File& file)
 
                 self->originalImage = std::move(result->original);
                 self->workingImage = std::move(result->working);
+                self->loadedImageBaseName = result->fileBaseName;
                 self->undoStack.clear();
                 self->redoStack.clear();
 
@@ -247,8 +250,12 @@ void MainComponent::exportImageClicked()
 
     // Export always produces a PNG, regardless of the format the image was
     // loaded from — a real, widely-viewable encoded image rather than a raw
-    // BMP/PNM byte reconstruction.
-    const auto suggestedFile = juce::File::getCurrentWorkingDirectory().getChildFile("export.png");
+    // BMP/PNM byte reconstruction. Defaults to Documents (or wherever the
+    // user last exported to — see exportSettingsStore) and suggests the
+    // loaded file's own name with "_modified" appended, rather than a fixed
+    // "export.png" that gives no hint which image it came from.
+    const auto suggestedName = (loadedImageBaseName.isNotEmpty() ? loadedImageBaseName : "export") + "_modified.png";
+    const auto suggestedFile = exportSettingsStore.getLastExportDirectory().getChildFile(suggestedName);
 
     fileChooser = std::make_unique<juce::FileChooser>("Export image", suggestedFile, "*.png");
 
@@ -258,6 +265,8 @@ void MainComponent::exportImageClicked()
             auto file = fc.getResult();
             if (file == juce::File())
                 return;
+
+            exportSettingsStore.setLastExportDirectory(file.getParentDirectory());
 
             if (workingImage->writeToPngFile(file))
                 setStatus("Exported to " + file.getFullPathName());

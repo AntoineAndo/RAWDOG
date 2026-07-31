@@ -4,6 +4,7 @@
 #include <array>
 #include <optional>
 #include "BusySpinner.h"
+#include "ExportSettingsStore.h"
 #include "FavouritePluginsStore.h"
 #include "GrippedResizerBar.h"
 #include "HeaderEditorPanel.h"
@@ -60,8 +61,10 @@ private:
                           // menuModel's populateFileMenuLoadImageItem callback
                           // below), same treatment as undoCommand/redoCommand,
                           // so the shortcut appears next to the menu item too.
-        resetCommand // Cmd+Shift+R — same command-item treatment as
-                     // loadImageCommand above, via populateFileMenuResetItem.
+        resetCommand, // Cmd+Shift+R — same command-item treatment as
+                      // loadImageCommand above, via populateFileMenuResetItem.
+        exportImageCommand // Cmd+S — same command-item treatment again, via
+                           // populateFileMenuExportItem.
     };
 
     void refreshPluginList();
@@ -242,8 +245,6 @@ private:
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },
         [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr || imageLoadInProgress; },
-        [this] { return workingImage != nullptr; },
-        [this] { exportImageClicked(); },
         [this] { refreshPluginList(); },
         [this](juce::PopupMenu& menu)
         {
@@ -253,7 +254,8 @@ private:
         [this] { return workingImage != nullptr && workingImage->getFormat() == RawImage::Format::bmp; },
         [this] { openHeaderEditorClicked(); },
         [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, loadImageCommand); },
-        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, resetCommand); }
+        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, resetCommand); },
+        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, exportImageCommand); }
     } };
 
     // Parents the plugin list and (optionally) the currently-open PluginEditorPanel;
@@ -275,6 +277,16 @@ private:
 
     std::unique_ptr<RawImage> originalImage;
     std::unique_ptr<RawImage> workingImage;
+
+    // Set from the loaded file's name (sans extension) once loadImageFile()'s
+    // async job installs successfully; used by exportImageClicked() to name
+    // the exported PNG "<loadedImageBaseName>_modified.png". Left as-is on a
+    // failed load (workingImage stays whatever it was before, so this should
+    // too) and on Reset to Original (still the same source file).
+    juce::String loadedImageBaseName;
+
+    ExportSettingsStore exportSettingsStore;
+
     std::unique_ptr<juce::AudioPluginInstance> currentPlugin;
 
     // Declared after currentPlugin as a matter of style (matching

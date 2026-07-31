@@ -14,8 +14,6 @@ public:
     {
         std::function<bool()> isScanning;
         std::function<bool()> isPanelOpen;
-        std::function<bool()> hasWorkingImage;
-        std::function<void()> onExportImage;
         std::function<void()> onRescan;
         std::function<void(juce::PopupMenu&)> populateEditMenu;
 
@@ -38,6 +36,12 @@ public:
         // Same command-item treatment as populateFileMenuLoadImageItem above,
         // for "Reset to Original" / resetCommand (Cmd+Shift+R).
         std::function<void(juce::PopupMenu&)> populateFileMenuResetItem;
+
+        // Same command-item treatment again, for "Export Image..." /
+        // exportImageCommand (Cmd+S) -- gives the item its keyboard shortcut,
+        // replacing the plain hasWorkingImage()-gated menu.addItem() this used
+        // to be.
+        std::function<void(juce::PopupMenu&)> populateFileMenuExportItem;
     };
 
     explicit MainMenuModel(Callbacks callbacksIn) : callbacks(std::move(callbacksIn)) {}
@@ -49,8 +53,7 @@ public:
 private:
     enum MenuItemIDs
     {
-        exportImageMenuItem = 1,
-        rescanPluginsMenuItem,
+        rescanPluginsMenuItem = 1,
         editHeaderMenuItem
     };
 
