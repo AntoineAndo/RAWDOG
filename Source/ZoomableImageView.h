@@ -78,6 +78,14 @@ public:
     // returns as soon as it's turned back off.
     void setFastResampling(bool shouldUseFastResampling);
 
+    // Purely a visual affordance for a host implementing
+    // juce::FileDragAndDropTarget itself (this class knows nothing about
+    // files/drag-and-drop) -- while true, the empty-state placeholder is
+    // drawn with an emphasized border/text so hovering a dragged file over
+    // the preview reads as "drop here", not just as a static hint. No-op
+    // once an image is loaded.
+    void setFileDragHover(bool isHovering);
+
 private:
     void fitToView();
     void applyZoom(float factor, juce::Point<float> anchorScreenPos);
@@ -134,4 +142,5 @@ private:
     juce::Image cachedRender;
     bool cachedRenderValid = false;
     bool fastResampling = false;
+    bool fileDragHover = false;
 };

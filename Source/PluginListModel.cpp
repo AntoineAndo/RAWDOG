@@ -11,8 +11,18 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
                                        bool hasPresets, bool presetsExpanded, bool rowIsSelected, int leftIndent, int width, int height)
 {
     const auto& palette = RawdogLookAndFeel::Palette::get();
-    const auto textColour = rowIsSelected ? palette.selectedFg : palette.ink;
-    const auto mutedColour = rowIsSelected ? palette.selectedFg.withAlpha(0.75f) : palette.inkMuted;
+    auto textColour = rowIsSelected ? palette.selectedFg : palette.ink;
+    auto mutedColour = rowIsSelected ? palette.selectedFg.withAlpha(0.75f) : palette.inkMuted;
+
+    // Dims every glyph on the row (not just the name, as before) so a
+    // disabled list -- no image loaded -- reads as a single greyed-out
+    // block rather than a row with one dim word floating in otherwise
+    // full-contrast chrome.
+    if (! enabled)
+    {
+        textColour = textColour.withMultipliedAlpha(0.4f);
+        mutedColour = mutedColour.withMultipliedAlpha(0.4f);
+    }
 
     if (hasPresets)
     {
@@ -41,7 +51,7 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
     const auto& font = g.getCurrentFont();
     const auto nameWidth = juce::jmin((float) textArea.getWidth(), juce::GlyphArrangement::getStringWidth(font, desc.name));
 
-    g.setColour(enabled ? textColour : mutedColour);
+    g.setColour(textColour);
     g.drawText(desc.name, textArea.getX(), textArea.getY(), (int) std::ceil(nameWidth), height,
                 juce::Justification::centredLeft);
 
@@ -67,14 +77,17 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
 void PluginListModel::paintPresetRow(juce::Graphics& g, const juce::String& presetName, bool rowIsSelected, int leftIndent, int width, int height)
 {
     const auto& palette = RawdogLookAndFeel::Palette::get();
-    const auto textColour = rowIsSelected ? palette.selectedFg : palette.inkMuted;
+    auto textColour = rowIsSelected ? palette.selectedFg : palette.inkMuted;
+
+    if (! enabled)
+        textColour = textColour.withMultipliedAlpha(0.4f);
 
     g.setColour(textColour);
-    g.drawText(presetName, leftIndent, 0, width - leftIndent - presetDeleteColumnWidth, height,
+    g.drawText(presetName, leftIndent, 0, width - leftIndent - presetMenuColumnWidth, height,
                 juce::Justification::centredLeft);
 
     g.setColour(textColour.withAlpha(0.7f));
-    g.drawText(juce::CharPointer_UTF8("\xC3\x97"), width - presetDeleteColumnWidth, 0, presetDeleteColumnWidth, height,
+    g.drawText(juce::CharPointer_UTF8("\xE2\x8B\xAE"), width - presetMenuColumnWidth, 0, presetMenuColumnWidth, height,
                 juce::Justification::centred);
 }
 
@@ -109,7 +122,7 @@ void PluginListModel::paintListBoxItem(int rowNumber, juce::Graphics& g,
             if (desc.manufacturerName == displayRow.vendorName)
                 ++matchingCount;
 
-        g.setColour(palette.ink);
+        g.setColour(enabled ? palette.ink : palette.ink.withMultipliedAlpha(0.4f));
         g.drawText(isExpanded ? juce::CharPointer_UTF8("\xE2\x96\xBE") : juce::CharPointer_UTF8("\xE2\x96\xB8"),
                     4, 0, starColumnWidth, height, juce::Justification::centred);
         g.setFont(RawdogLookAndFeel::chromeFont(11.0f));
@@ -198,7 +211,10 @@ void PluginListModel::listBoxItemClicked(int row, const juce::MouseEvent& e)
         return;
     }
 
-    // Preset row: only the right-edge delete "x" column is clickable.
+    // Preset row: the right-edge menu-trigger column opens the context menu
+    // on a left click anywhere else on the row; a right-click (isPopupMenu())
+    // opens it regardless of x position, matching the platform convention
+    // that a context menu isn't confined to one small glyph.
     const auto& desc = cachedTypes.getReference(displayRow.pluginIndex);
     const auto identifier = desc.createIdentifierString();
     const auto presetNames = presetsStore.getPresetNames(identifier);
@@ -206,9 +222,88 @@ void PluginListModel::listBoxItemClicked(int row, const juce::MouseEvent& e)
     if (! juce::isPositiveAndBelow(displayRow.presetIndex, presetNames.size()))
         return;
 
+    if (e.mods.isPopupMenu())
+    {
+        showPresetContextMenu(identifier, presetNames[displayRow.presetIndex]);
+        return;
+    }
+
     const int rowWidth = e.eventComponent != nullptr ? e.eventComponent->getWidth() : 0;
-    if (rowWidth > 0 && e.x >= rowWidth - presetDeleteColumnWidth)
-        confirmAndDeletePreset(identifier, presetNames[displayRow.presetIndex]);
+    if (rowWidth > 0 && e.x >= rowWidth - presetMenuColumnWidth)
+        showPresetContextMenu(identifier, presetNames[displayRow.presetIndex]);
+}
+
+void PluginListModel::showPresetContextMenu(const juce::String& pluginIdentifier, const juce::String& presetName)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "Open");
+    menu.addItem(2, "Rename...");
+    menu.addItem(3, "Delete...");
+
+    menu.showMenuAsync(juce::PopupMenu::Options(),
+        [this, pluginIdentifier, presetName](int result)
+        {
+            if (result == 1)
+            {
+                // Re-resolve by stable identity rather than trusting the row
+                // index captured when the menu opened -- showMenuAsync is
+                // non-blocking, so a background plugin rescan or another
+                // preset add/rename/delete can shift displayRows while this
+                // menu is still open.
+                if (auto freshRow = findPresetRow(pluginIdentifier, presetName))
+                    if (onDoubleClick)
+                        onDoubleClick(*freshRow);
+            }
+            else if (result == 2)
+                promptAndRenamePreset(pluginIdentifier, presetName);
+            else if (result == 3)
+                confirmAndDeletePreset(pluginIdentifier, presetName);
+        });
+}
+
+std::optional<int> PluginListModel::findPresetRow(const juce::String& pluginIdentifier, const juce::String& presetName) const
+{
+    for (int i = 0; i < displayRows.size(); ++i)
+    {
+        const auto& row = displayRows.getReference(i);
+        if (row.kind != DisplayRow::Kind::preset || ! juce::isPositiveAndBelow(row.pluginIndex, cachedTypes.size()))
+            continue;
+
+        if (cachedTypes.getReference(row.pluginIndex).createIdentifierString() != pluginIdentifier)
+            continue;
+
+        const auto presetNames = presetsStore.getPresetNames(pluginIdentifier);
+        if (juce::isPositiveAndBelow(row.presetIndex, presetNames.size()) && presetNames[row.presetIndex] == presetName)
+            return i;
+    }
+
+    return std::nullopt;
+}
+
+void PluginListModel::promptAndRenamePreset(const juce::String& pluginIdentifier, const juce::String& presetName)
+{
+    auto* alertWindow = new juce::AlertWindow("Rename Preset",
+                                               "Enter a new name for \"" + presetName + "\":",
+                                               juce::MessageBoxIconType::NoIcon);
+    alertWindow->addTextEditor("name", presetName, "Name:");
+    alertWindow->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    alertWindow->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    alertWindow->enterModalState(true, juce::ModalCallbackFunction::create(
+        [this, alertWindow, pluginIdentifier, presetName](int result)
+        {
+            const auto newName = alertWindow->getTextEditorContents("name").trim();
+
+            if (result == 1 && newName.isNotEmpty() && newName != presetName)
+            {
+                presetsStore.renamePreset(pluginIdentifier, presetName, newName);
+                rebuildDisplayRows();
+
+                if (onGroupExpansionChanged)
+                    onGroupExpansionChanged();
+            }
+        }),
+        true); // deleteWhenDismissed
 }
 
 void PluginListModel::confirmAndDeletePreset(const juce::String& pluginIdentifier, const juce::String& presetName)

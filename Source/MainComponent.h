@@ -25,7 +25,8 @@
 class MainComponent : public juce::Component,
                       private juce::ScrollBar::Listener,
                       private juce::AsyncUpdater,
-                      public juce::ApplicationCommandTarget
+                      public juce::ApplicationCommandTarget,
+                      public juce::FileDragAndDropTarget
 {
 public:
     MainComponent();
@@ -65,6 +66,23 @@ private:
 
     void refreshPluginList();
     void loadImageClicked();
+
+    // Shared tail of loadImageClicked()'s file-chooser callback and
+    // filesDropped() below -- both just need to hand a resolved juce::File
+    // off to the same imageLoaderPool dispatch. Guarded the same way
+    // loadImageClicked() is: a no-op while imageLoadInProgress.
+    void loadImageFile(const juce::File& file);
+
+    // juce::FileDragAndDropTarget overrides, letting the whole window act as
+    // a drop target for opening an image -- interested only while there's no
+    // image loaded/loading/being edited (same guard loadImageClicked() itself
+    // already applies via imageLoadInProgress, plus workingImage == nullptr
+    // so a drag can't clobber a session that's already open) and the
+    // dragged file's extension matches an accepted image type.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override;
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override;
+    void fileDragExit(const juce::StringArray& files) override;
+    void filesDropped(const juce::StringArray& files, int x, int y) override;
     void exportImageClicked();
     void loadAndOpenPlugin(int row);
     void openEditorClicked();

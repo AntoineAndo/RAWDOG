@@ -39,6 +39,8 @@ public:
 
     void deletePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
 
+    void renamePreset(const juce::String& pluginIdentifier, const juce::String& oldName, const juce::String& newName);
+
 private:
     // Returns the raw juce::Array<var>* backing this plugin's presets list
     // within presetsJson, or nullptr if it has none yet -- callers that need

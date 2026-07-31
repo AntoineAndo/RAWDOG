@@ -10,7 +10,7 @@ add_subdirectory(JUCE)
 juce_add_gui_app(RAWDOG
     PRODUCT_NAME "RAWDOG"
     COMPANY_NAME "rawdog"
-    ICON_BIG ""
+    ICON_BIG "${CMAKE_SOURCE_DIR}/Assets/icon.png"
 )
 
 target_sources(RAWDOG PRIVATE

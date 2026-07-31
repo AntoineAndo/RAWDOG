@@ -103,6 +103,26 @@ void PluginPresetsStore::deletePreset(const juce::String& pluginIdentifier, cons
     save();
 }
 
+void PluginPresetsStore::renamePreset(const juce::String& pluginIdentifier,
+                                       const juce::String& oldName, const juce::String& newName)
+{
+    auto* arr = getPresetsArray(pluginIdentifier);
+    if (arr == nullptr)
+        return;
+
+    for (auto& entry : *arr)
+    {
+        if (entry.getProperty("name", {}).toString() == oldName)
+        {
+            if (auto* obj = entry.getDynamicObject())
+                obj->setProperty("name", newName);
+            break;
+        }
+    }
+
+    save();
+}
+
 void PluginPresetsStore::save()
 {
     appProperties.getUserSettings()->setValue("pluginPresets", juce::JSON::toString(presetsJson));

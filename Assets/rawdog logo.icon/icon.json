@@ -1,0 +1,60 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.90795,0.90795,0.90795,1.00000",
+      "extended-gray:0.75000,1.00000"
+    ],
+    "orientation" : {
+      "start" : {
+        "x" : 0.5,
+        "y" : 1
+      },
+      "stop" : {
+        "x" : 0.5,
+        "y" : 0.3
+      }
+    }
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "normal"
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "normal"
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "rawdog logo.png",
+          "name" : "rawdog logo",
+          "position" : {
+            "scale" : 0.93,
+            "translation-in-points" : [
+              -7.905000000000086,
+              -33.48000000000002
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

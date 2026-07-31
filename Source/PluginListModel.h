@@ -136,6 +136,21 @@ private:
     // actually deleting -- deletion can't be undone, unlike a favourite toggle.
     void confirmAndDeletePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
 
+    // Popup shown by clicking a preset row's menu-trigger column: Open mirrors
+    // double-click (via onDoubleClick), Delete defers to confirmAndDeletePreset
+    // above, Rename opens promptAndRenamePreset below.
+    void showPresetContextMenu(const juce::String& pluginIdentifier, const juce::String& presetName);
+
+    // Heap-allocated juce::AlertWindow + addTextEditor, since there's no
+    // existing text-entry dialog pattern anywhere else in this codebase.
+    void promptAndRenamePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
+
+    // Re-resolves a preset's current row index by stable identity
+    // (identifier + name) rather than trusting a row index captured earlier --
+    // showMenuAsync is non-blocking, so displayRows can shift (rescan, another
+    // preset add/rename/delete) while the context menu is still open.
+    std::optional<int> findPresetRow(const juce::String& pluginIdentifier, const juce::String& presetName) const;
+
     void applyFilter()
     {
         cachedTypes.clear();
@@ -256,5 +271,5 @@ private:
 
     static constexpr int disclosureColumnWidth = 16;
     static constexpr int presetExtraIndent = 24;   // beyond the parent plugin row's own leftIndent
-    static constexpr int presetDeleteColumnWidth = 20;
+    static constexpr int presetMenuColumnWidth = 20;
 };

@@ -85,6 +85,13 @@ public:
     std::function<void()> onBeforeSelectionChange;
 
     void paint(juce::Graphics& g) override;
+
+    // The cached trace's background fill depends on isEnabled() (see
+    // ensureCachedTraceUpToDate()) -- unlike a size change, JUCE doesn't
+    // repaint automatically when only the enabled state flips, so the cache
+    // must be explicitly invalidated here.
+    void enablementChanged() override { invalidateCachedTrace(); repaint(); }
+
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;

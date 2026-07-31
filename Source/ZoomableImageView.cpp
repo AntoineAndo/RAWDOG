@@ -54,8 +54,22 @@ void ZoomableImageView::paint(juce::Graphics& g)
     if (! image.isValid())
     {
         RawdogLookAndFeel::drawDotMat(g, getLocalBounds());
-        g.setColour(RawdogLookAndFeel::Palette::get().inkMuted);
-        g.drawText("Click to load an image", getLocalBounds(), juce::Justification::centred);
+
+        const auto& palette = RawdogLookAndFeel::Palette::get();
+
+        if (fileDragHover)
+        {
+            g.setColour(palette.ink.withAlpha(0.08f));
+            g.fillRect(getLocalBounds());
+            g.setColour(palette.ink);
+            g.drawRect(getLocalBounds(), 2);
+            g.drawText("Drop image to load", getLocalBounds(), juce::Justification::centred);
+        }
+        else
+        {
+            g.setColour(palette.inkMuted);
+            g.drawText("Click or drop an image to load", getLocalBounds(), juce::Justification::centred);
+        }
         return;
     }
 
@@ -90,6 +104,17 @@ void ZoomableImageView::paint(juce::Graphics& g)
             g.drawRoundedRectangle(pill, pillHeight * 0.5f, 1.0f);
         }
     }
+}
+
+void ZoomableImageView::setFileDragHover(bool isHovering)
+{
+    if (fileDragHover == isHovering)
+        return;
+
+    fileDragHover = isHovering;
+
+    if (! image.isValid())
+        repaint();
 }
 
 void ZoomableImageView::ensureCachedRenderUpToDate()

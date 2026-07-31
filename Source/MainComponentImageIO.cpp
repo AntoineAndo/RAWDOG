@@ -76,97 +76,157 @@ void MainComponent::loadImageClicked()
         [this](const juce::FileChooser& fc)
         {
             auto file = fc.getResult();
-            if (! file.existsAsFile())
-                return;
-
-            // The heavy work (RAW conversion, file parse, waveform float
-            // conversion, first render -- ~2s of measured message-thread
-            // stall on a ~78MB image when it all ran here synchronously)
-            // happens on imageLoaderPool's thread; this thread only flips
-            // into the "loading" state (spinner on via previewBusySpinner's
-            // isBusy feed, image-mutating actions disabled) and installs the
-            // finished result when it comes back.
-            imageLoadInProgress = true;
-            setStatus("Loading " + file.getFileName() + juce::String::fromUTF8("…"));
-            updatePluginListEnablement();
-            menuModel.menuItemsChanged();
-
-            imageLoaderPool.addJob([file, safeThis = juce::Component::SafePointer<MainComponent>(this),
-                                    aliveWeak = std::weak_ptr<void>(imageLoadAliveToken)]
-            {
-                // ImageIO/CoreGraphics + toJuceImage() run on a raw pool
-                // thread with no run-loop autorelease pool -- same insurance
-                // as LivePreviewWorker::renderResult().
-                JUCE_AUTORELEASEPOOL
-                {
-                    auto result = std::make_shared<LoadedImage>();
-                    result->fileName = file.getFileName();
-                    loadImageOffThread(file, *result);
-
-                    // Two guards, both needed: the alive token covers the
-                    // shutdown window where ~MainComponent has started but
-                    // ~Component (which nulls SafePointers) hasn't run yet
-                    // (see imageLoadAliveToken); the SafePointer covers full
-                    // destruction after that.
-                    juce::MessageManager::callAsync([safeThis, aliveWeak, result]
-                    {
-                        if (aliveWeak.lock() == nullptr)
-                            return;
-
-                        auto* self = safeThis.getComponent();
-                        if (self == nullptr)
-                            return;
-
-                        // Belt-and-braces on the gating argument: while
-                        // imageLoadInProgress, no plugin session or header
-                        // edit can open, so the install can never land into
-                        // one (see updatePluginListEnablement()/menuModel).
-                        jassert(self->pluginEditorPanel == nullptr && self->headerEditorPanel == nullptr);
-
-                        if (result->working == nullptr)
-                        {
-                            self->finishImageLoad("Failed to load image: " + result->errorMessage);
-                            return;
-                        }
-
-                        self->originalImage = std::move(result->original);
-                        self->workingImage = std::move(result->working);
-                        self->undoStack.clear();
-                        self->redoStack.clear();
-
-                        // A freshly-loaded RawImage always defaults to bipolar, but the
-                        // combo and waveform views are session-long UI state left over
-                        // from any previous image — reset them to match.
-                        self->sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
-                        self->waveformView.setSampleMode(SampleFormat::Mode::bipolar);
-                        for (auto& view : self->channelWaveformViews)
-                            view.setSampleMode(SampleFormat::Mode::bipolar);
-
-                        // Split mode is forced off for a new image -- the same "new
-                        // image resets view state" semantic as the sample-mode reset
-                        // above. (Also fixes a latent bug in the old synchronous path:
-                        // with split mode left on, the channel lanes kept showing the
-                        // previous image's planes.) Must precede setBuffer() below so
-                        // its onViewChanged -> syncScrollBarToView() reads the plain
-                        // waveform as the primary view.
-                        self->setSplitMode(false);
-
-                        // The install-time equivalents of updateWaveform(true)/
-                        // updatePreview(true), minus the conversion/render costs the
-                        // job already paid off-thread.
-                        self->waveformView.setBuffer(std::move(result->waveformSamples), true,
-                                                     std::move(result->waveformPeaks));
-                        self->imagePreview.setImage(self->workingImage->toJuceImage(), true);
-                        self->updateHighlightOverlay(*self->workingImage, self->getCurrentSelectionScope());
-                        self->updateImageSizeLabel(*self->workingImage);
-
-                        self->finishImageLoad("Loaded " + result->fileName + " ("
-                                              + juce::String(self->workingImage->pixelBytes.getSize())
-                                              + " bytes of pixel data).");
-                    });
-                }
-            });
+            if (file.existsAsFile())
+                loadImageFile(file);
         });
+}
+
+void MainComponent::loadImageFile(const juce::File& file)
+{
+    if (imageLoadInProgress || ! file.existsAsFile())
+        return;
+
+    // The heavy work (RAW conversion, file parse, waveform float
+    // conversion, first render -- ~2s of measured message-thread
+    // stall on a ~78MB image when it all ran here synchronously)
+    // happens on imageLoaderPool's thread; this thread only flips
+    // into the "loading" state (spinner on via previewBusySpinner's
+    // isBusy feed, image-mutating actions disabled) and installs the
+    // finished result when it comes back.
+    imageLoadInProgress = true;
+    setStatus("Loading " + file.getFileName() + juce::String::fromUTF8("…"));
+    updatePluginListEnablement();
+    menuModel.menuItemsChanged();
+
+    imageLoaderPool.addJob([file, safeThis = juce::Component::SafePointer<MainComponent>(this),
+                            aliveWeak = std::weak_ptr<void>(imageLoadAliveToken)]
+    {
+        // ImageIO/CoreGraphics + toJuceImage() run on a raw pool
+        // thread with no run-loop autorelease pool -- same insurance
+        // as LivePreviewWorker::renderResult().
+        JUCE_AUTORELEASEPOOL
+        {
+            auto result = std::make_shared<LoadedImage>();
+            result->fileName = file.getFileName();
+            loadImageOffThread(file, *result);
+
+            // Two guards, both needed: the alive token covers the
+            // shutdown window where ~MainComponent has started but
+            // ~Component (which nulls SafePointers) hasn't run yet
+            // (see imageLoadAliveToken); the SafePointer covers full
+            // destruction after that.
+            juce::MessageManager::callAsync([safeThis, aliveWeak, result]
+            {
+                if (aliveWeak.lock() == nullptr)
+                    return;
+
+                auto* self = safeThis.getComponent();
+                if (self == nullptr)
+                    return;
+
+                // Belt-and-braces on the gating argument: while
+                // imageLoadInProgress, no plugin session or header
+                // edit can open, so the install can never land into
+                // one (see updatePluginListEnablement()/menuModel).
+                jassert(self->pluginEditorPanel == nullptr && self->headerEditorPanel == nullptr);
+
+                if (result->working == nullptr)
+                {
+                    self->finishImageLoad("Failed to load image: " + result->errorMessage);
+                    return;
+                }
+
+                self->originalImage = std::move(result->original);
+                self->workingImage = std::move(result->working);
+                self->undoStack.clear();
+                self->redoStack.clear();
+
+                // A freshly-loaded RawImage always defaults to bipolar, but the
+                // combo and waveform views are session-long UI state left over
+                // from any previous image — reset them to match.
+                self->sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
+                self->waveformView.setSampleMode(SampleFormat::Mode::bipolar);
+                for (auto& view : self->channelWaveformViews)
+                    view.setSampleMode(SampleFormat::Mode::bipolar);
+
+                // Split mode is forced off for a new image -- the same "new
+                // image resets view state" semantic as the sample-mode reset
+                // above. (Also fixes a latent bug in the old synchronous path:
+                // with split mode left on, the channel lanes kept showing the
+                // previous image's planes.) Must precede setBuffer() below so
+                // its onViewChanged -> syncScrollBarToView() reads the plain
+                // waveform as the primary view.
+                self->setSplitMode(false);
+
+                // The install-time equivalents of updateWaveform(true)/
+                // updatePreview(true), minus the conversion/render costs the
+                // job already paid off-thread.
+                self->waveformView.setBuffer(std::move(result->waveformSamples), true,
+                                             std::move(result->waveformPeaks));
+                self->imagePreview.setImage(self->workingImage->toJuceImage(), true);
+                self->updateHighlightOverlay(*self->workingImage, self->getCurrentSelectionScope());
+                self->updateImageSizeLabel(*self->workingImage);
+
+                self->finishImageLoad("Loaded " + result->fileName + " ("
+                                      + juce::String(self->workingImage->pixelBytes.getSize())
+                                      + " bytes of pixel data).");
+            });
+        }
+    });
+}
+
+namespace
+{
+    // Same extension set as loadImageClicked()'s FileChooser filter above,
+    // checked case-insensitively since a dragged file's extension case isn't
+    // guaranteed (unlike the FileChooser, which the OS already filters).
+    bool isAcceptableImageFile(const juce::File& file)
+    {
+        static const juce::StringArray extensions { "bmp", "pnm", "ppm", "pgm", "png", "jpg", "jpeg", "dng", "raf" };
+        return extensions.contains(file.getFileExtension().trimCharactersAtStart(".").toLowerCase());
+    }
+}
+
+bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    // Scoped to "no image currently open/loading" -- dropping a file to
+    // replace an in-progress edit would be a worse surprise than just not
+    // reacting to the drag at all (same reasoning as loadImageClicked()'s
+    // Load Image menu item being disabled in those same states); a user who
+    // wants to replace the current image can still use Load Image/Reset.
+    if (workingImage != nullptr || imageLoadInProgress || headerEditorPanel != nullptr)
+        return false;
+
+    for (const auto& path : files)
+        if (isAcceptableImageFile(juce::File(path)))
+            return true;
+
+    return false;
+}
+
+void MainComponent::fileDragEnter(const juce::StringArray&, int, int)
+{
+    imagePreview.setFileDragHover(true);
+}
+
+void MainComponent::fileDragExit(const juce::StringArray&)
+{
+    imagePreview.setFileDragHover(false);
+}
+
+void MainComponent::filesDropped(const juce::StringArray& files, int, int)
+{
+    imagePreview.setFileDragHover(false);
+
+    for (const auto& path : files)
+    {
+        juce::File file(path);
+        if (isAcceptableImageFile(file))
+        {
+            loadImageFile(file);
+            return;
+        }
+    }
 }
 
 void MainComponent::finishImageLoad(const juce::String& statusText)

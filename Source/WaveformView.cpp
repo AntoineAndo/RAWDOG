@@ -239,7 +239,11 @@ void WaveformView::ensureCachedTraceUpToDate()
     const auto& palette = RawdogLookAndFeel::Palette::get();
 
     juce::Graphics cg(cachedTrace);
-    cg.fillAll(palette.surface);
+
+    // Flat grey field (the same disabled-chrome tone used elsewhere) instead
+    // of the normal white surface when there's no image loaded -- otherwise
+    // an empty lane reads identically to a real, editable one.
+    cg.fillAll(isEnabled() ? palette.surface : palette.windowBg);
 
     const int width = w;
     const int height = h;

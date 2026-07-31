@@ -533,7 +533,27 @@ void MainComponent::updatePluginListEnablement()
     leftColumn.setListControlsEnabled(listInteractive);
     pluginListBox.repaint();
 
+    // pluginListBox.setEnabled() above doesn't reach its own internal
+    // Viewport scrollbar -- juce::ScrollBar's mouseDown/mouseDrag never check
+    // isEnabled() (that flag is purely informational for most components;
+    // only widgets like Button/Slider that explicitly test it stop
+    // responding), so a "disabled" list's scrollbar would otherwise stay
+    // fully draggable and still light up on hover. setInterceptsMouseClicks
+    // makes it swallow no mouse events at all while disabled -- so it can't
+    // be dragged, scrolled, or hovered, and the cursor over it behaves as if
+    // it isn't there.
+    auto& listScrollBar = pluginListBox.getVerticalScrollBar();
+    listScrollBar.setEnabled(listInteractive);
+    listScrollBar.setInterceptsMouseClicks(listInteractive, listInteractive);
+
     horizontalScrollBar.setEnabled(hasImage);
+
+    // Grey out the waveform lane(s) whenever there's no image -- otherwise an
+    // empty lane (blank white, no trace) reads identically to a real,
+    // editable one with nothing selected.
+    waveformView.setEnabled(hasImage);
+    for (auto& channelView : channelWaveformViews)
+        channelView.setEnabled(hasImage);
 
     horizontalScrollBar.setVisible(hasImage);
     splitModeToggle.setVisible(hasImage);
