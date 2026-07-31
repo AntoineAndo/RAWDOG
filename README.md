@@ -1,5 +1,5 @@
 
-<img width="7%" alt="rawdog logo-iOS-Default-1024x1024@1x" src="https://github.com/user-attachments/assets/30b1dcbb-b379-4edd-8c48-6a89afd79a41" align="left" />
+<img width="7%" alt="rawdog logo-iOS-Default-1024x1024@1x" src="https://github.com/user-attachments/assets/30b1dcbb-b379-4edd-8c48-6a89afd79a41" align="right" />
 
 # **R**aw **A**udio **W**aveform **D**atabending & **O**utput **G**litcher
 An image editing tool to databend image files with audio VST3 plugins
