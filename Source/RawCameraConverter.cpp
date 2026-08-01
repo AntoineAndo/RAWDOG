@@ -18,10 +18,9 @@ namespace
     template <typename T>
     using ScopedCFRef = std::unique_ptr<std::remove_pointer_t<T>, CFReleaser<T>>;
 
-    // Mirrors RawImage's own private maxDimension bound (RawImage.cpp) --
-    // duplicated here rather than shared, since no real camera sensor comes
-    // remotely close to this; it only exists for an earlier, clearer error
-    // message than a downstream BMP-loader rejection would otherwise give.
+    // Generous upper bound: no real camera sensor comes remotely close to it.
+    // Exists only to produce an earlier, clearer error message than a
+    // downstream BMP-loader rejection would otherwise give.
     constexpr int32_t maxDimension = 32768;
 
     void writeU32LE(uint8_t* p, uint32_t v) { p[0] = (uint8_t) v; p[1] = (uint8_t) (v >> 8); p[2] = (uint8_t) (v >> 16); p[3] = (uint8_t) (v >> 24); }
@@ -30,9 +29,8 @@ namespace
 
     // Fresh, self-consistent 54-byte BMP header (14-byte BITMAPFILEHEADER +
     // 40-byte BITMAPINFOHEADER) describing a bottom-up 24-bit uncompressed
-    // image -- same byte layout as RawImage.cpp's own (private,
-    // anonymous-namespace) buildBmp24Header(). Duplicated rather than shared
-    // so this converter stays fully additive and never touches RawImage.cpp.
+    // image. Kept private to this file so this converter stays fully
+    // additive and never touches RawImage.cpp.
     juce::MemoryBlock buildBmp24Header(int32_t width, int32_t height, int64_t pixelDataSize)
     {
         juce::MemoryBlock header;

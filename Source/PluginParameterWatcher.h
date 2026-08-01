@@ -34,9 +34,8 @@ public:
     // ramps drive a plugin parameter via setValueNotifyingHost() from the worker
     // thread (see LivePreviewWorker), which — unguarded — would look identical to a
     // real user knob-drag and re-trigger a live-preview recompute of the same
-    // deterministic ramps, forever. Scoping the suppression to a thread_local flag
-    // (rather than fully detaching the listener, as an earlier version of this class
-    // did) means it only ever suppresses the ramp-writing thread's own writes —
+    // deterministic ramps, forever. The suppression is scoped to a thread_local
+    // flag, so it only ever suppresses the ramp-writing thread's own writes —
     // a real gesture arriving concurrently on the message thread (or any other
     // thread) is never swallowed, since setValueNotifyingHost() invokes listeners
     // synchronously on whichever thread calls it.

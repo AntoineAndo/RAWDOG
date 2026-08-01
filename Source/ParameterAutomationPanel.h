@@ -17,7 +17,12 @@ class ParameterAutomationPanel : public juce::Component,
                                   private juce::AsyncUpdater
 {
 public:
-    explicit ParameterAutomationPanel(juce::AudioProcessor& processorIn) : processor(processorIn)
+    // seedRamps lets a caller reopen this panel for a plugin instance that
+    // already has ramps recorded elsewhere (a chain slot being reselected --
+    // see ChainSlot::ramps/MainComponent::selectChainSlot()) instead of always
+    // starting empty.
+    explicit ParameterAutomationPanel(juce::AudioProcessor& processorIn, std::vector<ParameterAutomation> seedRamps = {})
+        : processor(processorIn), automations(std::move(seedRamps))
     {
         addAndMakeVisible(addParameterButton);
         addParameterButton.onClick = [this] { showAddParameterMenu(); };
@@ -248,10 +253,9 @@ private:
         void addSegment()
         {
             // Both ends are fractions of the scope's total length, so a new
-            // segment can chain directly onto the previous one's actual end
-            // this time (unlike the old absolute-ms scheme) -- start where
-            // the last one ended, running for the same span, clamped so it
-            // can't run past 100%.
+            // segment can chain directly onto the previous one's actual end --
+            // start where the last one ended, running for the same span,
+            // clamped so it can't run past 100%.
             const double previousEnd = automation.segments.empty() ? 0.0 : automation.segments.back().endFraction;
             const double span = automation.segments.empty() ? 0.1 : (automation.segments.back().endFraction - automation.segments.back().startFraction);
             const double newEnd = juce::jmin(1.0, previousEnd + span);
@@ -405,8 +409,7 @@ private:
     // Re-layout is cheap (just Component bounds) and happens synchronously;
     // onChanged (which drives a full plugin reprocess) is debounced via
     // AsyncUpdater so a burst of edits collapses to one refresh per
-    // event-loop turn -- the same idiom PluginParameterWatcher and
-    // MainComponent's own selection-drag handling already use.
+    // event-loop turn.
     void relayoutAndNotify()
     {
         resized(); // unconditionally re-lays-out content too -- see the comment in resized() above

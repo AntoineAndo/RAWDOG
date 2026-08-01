@@ -131,9 +131,8 @@ private:
 
     void paintPresetRow(juce::Graphics& g, const juce::String& presetName, bool rowIsSelected, int leftIndent, int width, int height);
 
-    // Shows a confirmation dialog (same AlertWindow+MessageBoxOptions
-    // convention as MainComponent::confirmDiscardChangesIfNeeded) before
-    // actually deleting -- deletion can't be undone, unlike a favourite toggle.
+    // Shows a confirmation dialog before actually deleting -- deletion can't
+    // be undone, unlike a favourite toggle.
     void confirmAndDeletePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
 
     // Popup shown by clicking a preset row's menu-trigger column: Open mirrors
@@ -177,8 +176,8 @@ private:
     // vendor with zero matches under an active search query correctly
     // produce no header row, with no extra filtering logic needed: if none of
     // its plugins survived applyFilter() into cachedTypes, it never appears in
-    // the map built below. Unconditional now (no longer skipped in flat mode)
-    // since presets need to nest under a plugin row either way.
+    // the map built below. Runs in both flat and grouped mode, since presets
+    // need to nest under a plugin row either way.
     void rebuildDisplayRows()
     {
         displayRows.clear();

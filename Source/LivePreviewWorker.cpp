@@ -4,63 +4,76 @@
 
 namespace
 {
-    // The actual heavy lifting -- relocated verbatim (aside from reading its
-    // inputs off a Request instead of MainComponent/workingImage directly) from
-    // what used to be MainComponent::computeProcessedPixelBytes(). Runs entirely
-    // on LivePreviewWorker's background thread: touches only request.plugin and
-    // plain juce::MemoryBlock/AudioBuffer values, never workingImage/RawImage --
-    // RawImage's lazy render/plane caches are not thread-safe, so nothing here
-    // may touch them.
+    // Runs the whole effect chain, in order, over a single float buffer --
+    // skips bypassed slots, resets each enabled plugin's DSP state before its
+    // own pass (so repeated live-preview passes against the same source bytes
+    // stay deterministic for stateful plugins), and builds each slot's
+    // beforeBlock closure from that slot's own ramps rather than a single
+    // shared one -- see PluginHost::processWholeBuffer's beforeBlock hook and
+    // ChainSlot::ramps.
+    //
+    // ScopedSelfWriteSuppression: a ramp's setValueNotifyingHost() runs on
+    // this background thread, so a thread_local suppression flag is what
+    // lets PluginParameterWatcher tell "my own automated write" apart from a
+    // real concurrent knob-drag on the message thread. This remains correct
+    // per-slot regardless of which slot (if any) currently has a listener
+    // attached on the message thread -- the flag is thread-local, not
+    // per-AudioProcessor, so it suppresses every ramp write in this loop
+    // equally.
+    void runChain(const std::vector<LivePreviewWorker::ChainSlotRequest>& chain,
+                  juce::AudioBuffer<float>& buffer, double totalScopeMs, double sampleRate, int blockSize)
+    {
+        for (const auto& slot : chain)
+        {
+            if (slot.bypassed || slot.plugin == nullptr)
+                continue;
+
+            auto& plugin = *slot.plugin;
+            plugin.reset();
+
+            const auto& ramps = slot.ramps;
+            auto beforeBlock = [&plugin, &ramps, totalScopeMs, sampleRate](int blockStartSample)
+            {
+                if (ramps.empty())
+                    return;
+
+                const double timeMs = (blockStartSample / sampleRate) * 1000.0;
+
+                PluginParameterWatcher::ScopedSelfWriteSuppression suppress;
+                for (auto& ramp : ramps)
+                    if (auto* param = plugin.getParameters()[ramp.parameterIndex]) // bounds-checked, nullptr if stale
+                        param->setValueNotifyingHost(ramp.evaluateAt(timeMs, totalScopeMs));
+            };
+
+            PluginHost::processWholeBuffer(plugin, buffer, blockSize, beforeBlock);
+        }
+    }
+
+    // Runs the whole effect chain over the source bytes for one live-preview
+    // pass. Runs entirely on LivePreviewWorker's background thread: touches
+    // only request.chain's plugin pointers and plain juce::MemoryBlock/
+    // AudioBuffer values, never workingImage/RawImage -- RawImage's lazy
+    // render/plane caches are not thread-safe, so nothing here may touch them.
     juce::MemoryBlock processRequest(const LivePreviewWorker::Request& request)
     {
-        auto& plugin = *request.plugin;
-
-        plugin.reset(); // clean DSP state before every independent reprocessing pass, so repeated
-                         // live-preview passes against the same source bytes stay deterministic for
-                         // stateful plugins (filters, reverbs, etc).
-
         const juce::MemoryBlock& source = *request.source;
         const auto& selection = request.selection;
 
         // A ramp segment's start/endFraction are relative to the scope actually
         // being processed (the selection sub-range, or the whole buffer when
         // there's no selection) -- computed once here so they scale with whatever
-        // the user has selected, rather than a fixed absolute duration.
+        // the user has selected, rather than a fixed absolute duration. Shared by
+        // every slot's ramps in the chain.
         const int totalScopeSamples = selection.isEmpty() ? (int) source.getSize() : selection.getLength();
         const double totalScopeMs = (totalScopeSamples / request.sampleRate) * 1000.0;
-
-        // Evaluated once per block (see PluginHost::processWholeBuffer's beforeBlock
-        // hook) rather than once for the whole pass, so a ramp can sweep a
-        // parameter's value across the scope instead of holding it static — time
-        // is milliseconds from the start of whichever buffer is passed to
-        // processWholeBuffer below (the selection sub-range, or the whole buffer),
-        // which is already the correct origin for either case.
-        //
-        // ScopedSelfWriteSuppression replaces the old ScopedWatcherPause (which
-        // fully detached PluginParameterWatcher for the whole call): a ramp's
-        // setValueNotifyingHost() now runs on this background thread, and a
-        // thread_local suppression flag correctly distinguishes "my own
-        // automated write" from a real concurrent knob-drag on the message
-        // thread, which a full detach could no longer safely tell apart.
-        const auto& ramps = request.ramps;
-        auto beforeBlock = [&plugin, &ramps, totalScopeMs, sampleRate = request.sampleRate](int blockStartSample)
-        {
-            if (ramps.empty())
-                return;
-
-            const double timeMs = (blockStartSample / sampleRate) * 1000.0;
-
-            PluginParameterWatcher::ScopedSelfWriteSuppression suppress;
-            for (auto& ramp : ramps)
-                if (auto* param = plugin.getParameters()[ramp.parameterIndex]) // bounds-checked, nullptr if stale
-                    param->setValueNotifyingHost(ramp.evaluateAt(timeMs, totalScopeMs));
-        };
 
         // Bytes outside the selection are provably untouched (see PROJECT.md's "Apply
         // scoping"), so start from a plain byte copy of the source and only pay the
         // float round-trip for the selected sub-range — on a large image with a small
-        // selection, converting the whole buffer on every live-preview tick was pure
-        // waste.
+        // selection, converting the whole buffer on every live-preview tick would be
+        // pure waste. The float round-trip happens exactly once total regardless of chain
+        // length -- every enabled slot processes the same in-memory buffer in place,
+        // one after another, with no intermediate byte conversion between slots.
         if (! selection.isEmpty())
         {
             const int start = selection.getStart();
@@ -69,7 +82,7 @@ namespace
             juce::MemoryBlock selectionBytes(static_cast<const char*>(source.getData()) + start, (size_t) length);
 
             auto selectedBuffer = SampleFormat::bytesToBuffer(selectionBytes, request.sampleMode);
-            PluginHost::processWholeBuffer(plugin, selectedBuffer, request.blockSize, beforeBlock);
+            runChain(request.chain, selectedBuffer, totalScopeMs, request.sampleRate, request.blockSize);
             SampleFormat::bufferToBytes(selectedBuffer, selectionBytes, request.sampleMode);
 
             juce::MemoryBlock result(source);
@@ -78,7 +91,7 @@ namespace
         }
 
         auto buffer = SampleFormat::bytesToBuffer(source, request.sampleMode);
-        PluginHost::processWholeBuffer(plugin, buffer, request.blockSize, beforeBlock);
+        runChain(request.chain, buffer, totalScopeMs, request.sampleRate, request.blockSize);
 
         juce::MemoryBlock result;
         result.setSize(source.getSize());
@@ -86,12 +99,9 @@ namespace
         return result;
     }
 
-    // Renders the image + waveform float buffer for a just-computed result --
-    // relocated verbatim (aside from reading request.image instead of
-    // workingImage) from what used to be MainComponent::applyLivePreviewResult(),
-    // which paid this cost synchronously on the message thread every single
-    // tick. Runs entirely on LivePreviewWorker's background thread: safe
-    // because every RawImage method called here is `const`, and the one
+    // Renders the image + waveform float buffer for a just-computed result.
+    // Runs entirely on LivePreviewWorker's background thread: safe because
+    // every RawImage method called here is `const`, and the one
     // shared mutable cache any of them touch (cachedPlainImage/plainImageDirty,
     // inside toJuceImageFromBytes()/toJuceImageFromBytesScoped()) is, for the
     // whole lifetime of a live-preview session, only ever touched from this

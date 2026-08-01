@@ -11,6 +11,8 @@
 class ZoomableImageView : public juce::Component
 {
 public:
+    ZoomableImageView();
+
     // resetView: true resets zoom/pan to fit-the-viewport (a genuinely new image);
     // false keeps the current zoom/pan (an in-place refresh, e.g. after Apply).
     void setImage(juce::Image newImage, bool resetView = true);
@@ -55,9 +57,9 @@ public:
     // captured as a resize/move drag instead, see onHighlightRegion* below.
     std::function<void()> onClick;
 
-    // Fired once at the start of a highlight-region resize/move drag (mirrors
-    // WaveformView::onBeforeSelectionChange) -- lets a host snapshot "before"
-    // state for undo before the drag actually changes anything.
+    // Fired once at the start of a highlight-region resize/move drag -- lets
+    // a host snapshot "before" state for undo before the drag actually
+    // changes anything.
     std::function<void()> onHighlightRegionDragStart;
 
     // Fired on every drag frame while resizing/moving the highlight region,
@@ -87,6 +89,23 @@ public:
     void setFileDragHover(bool isHovering);
 
 private:
+    // The empty-state placeholder's content (icon/title/subtext/button) reads
+    // as one centred vertical block -- paint() and resized() (which only
+    // needs to position the one real child, chooseFileButton) must agree on
+    // its layout, so both derive their rects from this single source rather
+    // than duplicating the same constants twice.
+    struct PlaceholderLayout
+    {
+        juce::Rectangle<int> icon, title, subtitle, button;
+    };
+    PlaceholderLayout getPlaceholderLayout() const;
+
+    // The dashed "drop zone" card itself -- roughly half the view's size,
+    // centred, clamped to a sane minimum. Shared by paint() (the card's
+    // fill/border) and getPlaceholderLayout() (its content), so they can
+    // never disagree about where the card actually is.
+    juce::Rectangle<int> getCardBounds() const;
+
     void fitToView();
     void applyZoom(float factor, juce::Point<float> anchorScreenPos);
     juce::AffineTransform getImageToScreenTransform() const;
@@ -143,4 +162,10 @@ private:
     bool cachedRenderValid = false;
     bool fastResampling = false;
     bool fileDragHover = false;
+
+    // Real child (not just a click-anywhere affordance) so the empty state
+    // reads as an actual call to action, matching the design mockup --
+    // fires the exact same onClickWithNoImage callback the whole-area click
+    // already does. Only ever visible while ! image.isValid().
+    juce::TextButton chooseFileButton { "Choose File..." };
 };

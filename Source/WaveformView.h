@@ -97,10 +97,10 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
 
-    // Trackpad gestures replacing the old horizontal-zoom slider: two-finger
-    // drag pans the view (delivered as wheel deltas, same convention
-    // ZoomableImageView::mouseWheelMove relies on), pinch zooms anchored on
-    // the sample under the cursor so that sample stays put on screen.
+    // Trackpad gestures for horizontal zoom/pan: two-finger drag pans the view
+    // (delivered as wheel deltas, same convention ZoomableImageView::
+    // mouseWheelMove relies on), pinch zooms anchored on the sample under the
+    // cursor so that sample stays put on screen.
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
 
@@ -110,12 +110,13 @@ private:
 
     // Pre-rendered, viewport-sized trace cache. paint()'s per-column min/max
     // scan (viewLengthSamples samples total, worst case the whole buffer)
-    // used to rerun on every repaint -- including the ones mouseDrag() fires
-    // on every raw mouse-move event during a plain selection drag, since that
-    // never went through any debounce. The trace only actually depends on
-    // waveformData/viewStartSample/viewLengthSamples/sampleMode, never the
-    // selection, so it's cached here and only regenerated when one of those
-    // actually changes -- see invalidateCachedTrace() call sites.
+    // would otherwise rerun on every repaint -- including the ones
+    // mouseDrag() fires on every raw mouse-move event during a plain
+    // selection drag, since that goes through no debounce. The trace only
+    // actually depends on waveformData/viewStartSample/viewLengthSamples/
+    // sampleMode, never the selection, so it's cached here and only
+    // regenerated when one of those actually changes -- see
+    // invalidateCachedTrace() call sites.
     void ensureCachedTraceUpToDate();
     void invalidateCachedTrace() { cachedTraceValid = false; }
     juce::Image cachedTrace;

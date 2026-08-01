@@ -365,6 +365,34 @@ purely as a structural refactor with no behavior change:
   interprets negative min/max as a live-recomputed proportion of current total
   size, not a one-time absolute pixel value, which is what makes the 50% cap
   keep working correctly across window resizes without any extra code).
+  - **`GrippedResizerBar`** is now a thin, paint-free wrapper around
+    `juce::StretchableLayoutResizerBar` — it originally overrode `paint()` to
+    draw a 3-dot grip handle plus a white pill plate behind it, but both were
+    removed at the user's request in favour of a permanent, subtle affordance:
+    `RawdogLookAndFeel::drawStretchableLayoutResizerBar()` now always fills the
+    bar with the same faint `ink`-alpha tint previously reserved for
+    hover/drag (12%/25% respectively), with no hairline and no handle glyph.
+  - **Z-order gotcha, hit and fixed**: `LeftColumnPanel::setEditorPanel()`
+    calls `addAndMakeVisible(*currentPanel)` every time a different plugin
+    editor panel is swapped in, and JUCE inserts newly-added children at the
+    *front* of the paint stack — so each panel swap silently promoted
+    `currentPanel` above `resizerBar` (added once, in the constructor),
+    letting the panel's edge visually cover the divider. Fixed with an
+    explicit `resizerBar.toFront(false)` right after `addAndMakeVisible`.
+    `RightColumnPanel` never had this bug since nothing is ever added after
+    its own `resizerBar`.
+  - **Corner-gap gotcha, hit and fixed**: `LeftColumnPanel`/`RightColumnPanel`
+    each inset their own layout area by an 8px margin before laying out their
+    horizontal resizer bar, so that bar's tinted rect stopped 8px short of the
+    column's true edge — exactly where `MainComponent`'s vertical
+    `outerResizerBar` sits flush (it only has the *window's* one-time 8px
+    inset, not a second panel-local one). The two bars' tints therefore left
+    an 8×8px uncovered notch at their intersection. Fixed by stretching each
+    horizontal bar's bounds out to the panel's true edge right after layout
+    (`LeftColumnPanel::resized()`: `resizerBar.setBounds(...).withRight(getWidth())`;
+    `RightColumnPanel::resized()`: `.withLeft(0)`) — bounds-only, so it doesn't
+    change `StretchableLayoutManager`'s drag math (drag delta is computed
+    along the bar's short axis, not its length).
 - **Plugin editor panel** (`PluginEditorPanel.h` — its own header now, see the file
   layout note at the top of this section): no longer a separate `DocumentWindow`
   popup — the plugin's
@@ -403,6 +431,189 @@ purely as a structural refactor with no behavior change:
   actually kept its parameter state regardless of window visibility), then Apply
   didn't close the window (no feedback that anything happened) — that history is
   why Apply-closes-and-commits remains the one dismiss action today.
+  **Note: this bullet describes the original single-plugin design.** Once a
+  session could hold more than one plugin (see "Multi-plugin effect chain"
+  below), Apply/Cancel/"gated on `pluginEditorPanel`" all changed shape —
+  Apply moved off this panel entirely, Cancel no longer ends the whole
+  session, and a third **OK** button was added in Apply's old position. The
+  live-preview mechanics described here (the watcher, the coalesced
+  `AsyncUpdater`, `plugin.reset()` before each pass) are otherwise unchanged,
+  just now running per-slot inside the chain's own processing loop — see
+  below and `LivePreviewWorker`'s own comments.
+- **Multi-plugin effect chain** (`ChainSlot.h`, `EffectChainPanel.h`; new
+  chain-management methods on `MainComponent` in `MainComponentPluginEditor.cpp`).
+  Built to replace the one-plugin-at-a-time workaround (apply, inspect, apply
+  again manually) that this app shipped with from M1 onward — see the
+  "Plugin chaining/rack" entry that used to sit in the deferred-v2 list below.
+  - **Data model**: `MainComponent::currentPlugin` (one `AudioPluginInstance`)
+    became `pluginChain`, a `std::vector<ChainSlot>` in DSP order (index 0
+    processed first). Each `ChainSlot` is `{ unique_ptr<AudioPluginInstance>
+    plugin; std::vector<ParameterAutomation> ramps; bool bypassed; }` — no
+    separate `PluginDescription` field, since `plugin->getPluginDescription()`
+    already gives that cheaply and a cached copy could only drift. An empty
+    chain means "no session open," the same role `currentPlugin == nullptr`
+    used to play — grown only by `addPluginToChain()` after a successful
+    `PluginHost::createInstance()` (a failed load never touches an
+    already-loaded slot, a strict improvement over the old
+    `loadAndOpenPlugin()`, which released the previous plugin before even
+    trying to create the new one), and fully cleared by
+    `endLivePreviewSession()` (both Apply and — now only when it empties the
+    chain entirely — Cancel) or by `removeChainSlot()` shrinking it to zero.
+  - **Processing**: `PluginHost::processWholeBuffer()` needed zero changes —
+    it was already chain-composable (call it N times on the same
+    `AudioBuffer<float>`). `LivePreviewWorker::Request::plugin`/`ramps`
+    (singular) became `Request::chain`, a `std::vector<ChainSlotRequest>`
+    (non-owning plugin pointer + that slot's own ramps + its bypass flag),
+    rebuilt fresh on every `refreshLivePreview()` call. `processRequest()`
+    still does exactly one byte↔float round-trip (selection-scoped or
+    whole-buffer, unchanged) and loops the chain via a new `runChain()` free
+    function in between, in place on the same float buffer — bypassed slots
+    are skipped, each enabled slot gets `plugin.reset()` and its *own*
+    `beforeBlock` closure built from its *own* ramps, not a shared one.
+    `renderResult()` needed no changes at all — it only ever sees the final
+    post-chain bytes, the same shape as the old post-single-plugin bytes.
+  - **UI placement iterated twice** before landing on the left column. First
+    attempt: a "Waveform"/"Effect Chain" tab inside `WaveformSectionPanel`, in
+    the right column where the waveform already lived (the user's first
+    request — "the effect chain panel is a tab where the waveform is").
+    Reworked shortly after, per explicit follow-up request, into
+    `LeftColumnPanel` gaining a new top-level `SessionTabs` bar ("Effect
+    Chain" / "Plugins", Effect Chain selected by default) *above* the
+    existing All/Favourites/By Vendor filter tabs — everything the plugin
+    browser used to always show (search box, filter tabs, the `ListBox`) now
+    lives under "Plugins" instead, and the rack (`EffectChainPanel`) lives
+    under "Effect Chain", reusing the exact same resizable-divider mechanism
+    the plugin list used to sit in directly (item 0 = the rack instead of the
+    list, item 2 = the currently-open `PluginEditorPanel`, if any — see the
+    "Resizable panel layout" bullet above). `WaveformSectionPanel`/
+    `RightColumnPanel` were reverted back to their pre-chain state once the
+    rack moved out.
+  - **`EffectChainPanel`'s own visual design iterated three times** in the
+    same session, all per direct user feedback while looking at the running
+    app: hand-rolled list rows (one per slot, a name label + bypass/remove/
+    reorder buttons, `juce::ListBoxModel` was deliberately not used — too few
+    rows, too many inline interactive controls per row to fight its
+    single-paint-callback model) → square (1×1 aspect), pedalboard-style
+    boxes laid out **horizontally**, reading **right to left** (chain index 0
+    rightmost, connecting arrows pointing left) → reversed to the more
+    conventional **left to right** (index 0 leftmost, arrows pointing right)
+    → finally **rotated to vertical** (top to bottom, arrows pointing down)
+    once the panel moved into the narrow left column, where a single stacked
+    column reads far better than a wide horizontal strip. Each direction
+    reversal flipped which physical button (then side, now up/down) maps to
+    which index change (`index - 1` = "move toward chain start" = earlier
+    position on screen; `index + 1` = "move toward chain end") — worth
+    remembering if the layout axis is ever revisited, since getting a
+    direction flip half-right (buttons wired but pointing the wrong way) is
+    an easy, easy-to-miss mistake.
+  - **The trailing "+ Add effect" box** is a dashed-border placeholder, not a
+    real `ChainSlot` — clicking it fires `EffectChainPanel::onAddEffectClicked`,
+    wired to `LeftColumnPanel::showPluginsTab()`. Double-clicking a plugin in
+    the browser still calls `addPluginToChain()` exactly as before (append,
+    select, refresh the live preview), but its tail now also calls
+    `leftColumn.showEffectChainTab()` — a deliberate round trip so the user
+    always lands back on the rack seeing the effect they just picked land in
+    the chain, rather than staying on the browser they came from.
+  - **Per-slot editing reuses the single-plugin mechanism unchanged**:
+    `MainComponent::selectChainSlot(int)` mounts `pluginChain[index]`'s native
+    editor (`createEditorIfNeeded()`/`GenericAudioProcessorEditor` fallback,
+    identical call) into the same `PluginEditorPanel`/divider slot the
+    original design used for its one plugin. This *is* genuinely new
+    territory though: the old design never destroyed-then-recreated an editor
+    for a plugin that kept living (Apply/Cancel always ended the whole
+    session, and the plugin itself became garbage shortly after). Verified
+    against JUCE 8.0.14 source before writing any code, not by trial and
+    error: destroying `pluginEditorPanel` (and its owned editor) and later
+    calling `createEditorIfNeeded()` again on the same still-alive plugin
+    instance works correctly for both formats this app hosts —
+    `VST3PluginWindow::~VST3PluginWindow()` and
+    `AudioUnitPluginWindowCocoa`'s destructor both self-report via
+    `editorBeingDeleted()` in their own dtors (a JUCE-wide contract on the
+    *format* side, not something the host needs to implement itself), and
+    `GenericAudioProcessorEditor` bypasses that bookkeeping entirely. A
+    single `PluginParameterWatcher` instance is re-`attachTo()`'d to whichever
+    slot is currently selected rather than one instance per slot — only the
+    selected slot ever has a live native editor a user could actually be
+    tweaking.
+  - **Reordering is up/down buttons only, no drag-and-drop** — a deliberate
+    v1 scope call, not a limitation hit and worked around.
+    `moveChainSlot(from, to)` doesn't need `livePreviewWorker.waitUntilIdle()`
+    first: `std::swap` on a `ChainSlot` moves the `unique_ptr`'s pointer
+    *value*, never the pointee, so any raw `AudioPluginInstance*` already
+    captured in an in-flight `LivePreviewWorker::Request` stays valid
+    regardless of where in the vector it now sits. `removeChainSlot(index)`
+    is different — it actually destroys a plugin instance, so it must (and
+    does) call `waitUntilIdle()` *before* releasing that slot's resources, in
+    case an in-flight worker pass is still inside that exact plugin's
+    `processBlock()`. **Bug found and fixed during review**: a first draft
+    had `removeChainSlot()` tear the outgoing editor down (when removing the
+    selected slot) *before* calling `waitUntilIdle()`, inverting the ordering
+    every other teardown path in this file uses specifically because some
+    third-party plugins (see the MeldaProduction dead-man's-pedal precedent
+    under `PluginScanner` above) do unsafe things internally when their
+    editor is torn down concurrently with their own audio thread.
+  - **Cancel/Apply/OK semantics, reworked per explicit request.** Originally
+    (matching the single-plugin design one section up) Cancel discarded the
+    *whole* session and Apply lived on `PluginEditorPanel` right next to it.
+    Both changed:
+    - **Apply moved off `PluginEditorPanel` entirely, onto `EffectChainPanel`
+      itself** — a button docked below the scrolling rack (disabled whenever
+      the chain is empty), since it always commits the *whole* chain's
+      cumulative result regardless of which slot, if any, is selected; it
+      never conceptually belonged on a panel that only ever represents one
+      slot at a time.
+    - **Cancel now removes only the currently selected slot**
+      (`cancelEditorClicked()` calls `removeChainSlot(selectedChainSlot)`
+      instead of ending the whole session) — every other slot is untouched
+      and stays live. Removing the sole remaining slot still ends the whole
+      session (delegates to the same `endLivePreviewSession(false)` teardown
+      as before), so that one case is unchanged.
+    - **A new OK button** sits in Apply's old position on `PluginEditorPanel`.
+      Wired to a new `MainComponent::deselectChainSlot()`: writes the
+      outgoing slot's live ramps back into `ChainSlot::ramps` (same as
+      switching to a different slot would), tears down the editor and
+      detaches the watcher, but — unlike Cancel — never touches `pluginChain`
+      at all. The slot stays in the chain, still live-previewed, exactly as
+      it was; you've just stopped looking at its knobs.
+  - **The "chain open, nothing selected" state this created, and its ripple
+    effect — the most architecturally significant part of this whole
+    feature.** OK introduced a state that never existed under the
+    single-plugin design: `pluginEditorPanel == nullptr` while `pluginChain`
+    is non-empty. Previously "a plugin is loaded" and "its editor is open"
+    were the same fact, so plenty of code used `pluginEditorPanel != nullptr`
+    as a stand-in for "is a session open" — every one of those had to be
+    re-derived and re-pointed at the actual fact, `! pluginChain.empty()`,
+    instead: the `getCommandInfo()` active-checks for Undo/Redo/Load
+    Image/Reset/Export, the `menuModel` "is a panel open" callback,
+    `refreshLivePreview()`'s own guard, `applyLivePreviewResult()`'s
+    staleness check, the split-mode-toggle/sample-mode-combo gating inside
+    `updatePluginListEnablement()`, and the three
+    `onBeforeSelectionChange`/`onHighlightRegionDragStart` "don't push a
+    redundant undo entry mid-session" checks. The handful of places that
+    genuinely mean "is a specific slot's editor mounted right now" — the
+    Escape-key Cancel shortcut's active-check, and the ramps
+    write-back/sourcing logic inside `selectChainSlot()`/
+    `deselectChainSlot()`/`refreshLivePreview()` itself — correctly stayed
+    keyed on `pluginEditorPanel`. Getting this distinction backwards anywhere
+    would have silently re-enabled Undo/Load/Reset while a chain was still
+    live (a data-loss-shaped bug) or left the live preview undeliverable
+    after clicking OK.
+  - **A related bug found and fixed in the same pass**: `endLivePreviewSession()`
+    itself never re-rendered the image/waveform from `workingImage`'s
+    committed bytes — every one of its callers had always immediately
+    followed it with their own `updatePreview()`/`updateWaveform()` calls to
+    clear whatever stale live-preview image was still on screen.
+    `removeChainSlot()`'s "this was the last slot" branch (delegating to
+    `endLivePreviewSession(false)`) was a new caller that didn't know to do
+    this — so removing the sole remaining slot via the rack's own "×" button
+    left the image preview showing the just-discarded chain's stale
+    processed result. Fixed by moving `updatePreview()`/`updateWaveform()`
+    into `endLivePreviewSession()`'s own tail instead of requiring every
+    caller to remember it separately.
+  - **"Save as Preset" stays scoped to whichever slot's editor is currently
+    open**, unchanged from the single-plugin design — a whole-chain combined
+    preset (save/recall every slot's plugin + parameters + ramps as one unit)
+    was considered and left out of scope; see the deferred-v2 list below.
 - **Parameter automation / fade in-out ramps** (`ParameterAutomation.h`,
   `ParameterAutomationPanel.h`; a new "Editor"/"Automation" tab strip at the top
   of `PluginEditorPanel`). Born from a real limitation: applying a plugin to a
@@ -410,9 +621,8 @@ purely as a structural refactor with no behavior change:
   hard cut at the selection's edges. This lets one or more of the plugin's own
   parameters ramp from an initial value to a target value across the scope
   instead, so an edit can fade in/out rather than snap on/off. Deliberately
-  scoped to the single currently-loaded plugin (no multi-plugin chaining — see
-  Deferred below) and to *this* image's selection/byte-position axis, not a
-  separate animation timeline — an earlier direction (an Ableton-style
+  scoped to *this* image's selection/byte-position axis, not a separate
+  animation timeline — an earlier direction (an Ableton-style
   automation graph driving a rendered frame sequence exported as an animated
   GIF) was explored and abandoned once the actual need turned out to be "smooth
   the edges of an existing Apply," not "export a new artifact."
@@ -1106,6 +1316,14 @@ purely as a structural refactor with no behavior change:
     `getExportWildcard()`/`getDefaultExportExtension()` helpers that existed
     solely to keep that verbatim writer's extension honest) — both removed as
     dead code once every export became format-independent PNG.
+  - **Export Image is a Cmd+S `ApplicationCommand`**, not a plain
+    `menu.addItem()` — same `menu.addCommandItem()` treatment as Load Image
+    (Cmd+O) / Reset to Original (Cmd+Shift+R), via a
+    `populateFileMenuExportItem` callback (`MainMenuModel::Callbacks`) so
+    `MainComponent` still owns `exportImageCommand`'s ID/gating without
+    `MainMenuModel` needing to know it. Its suggested save location/filename
+    are described under `ExportSettingsStore`/`loadedImageBaseName` in the
+    Milestones list below.
   - **Gotcha already hit and fixed**: the native macOS menu does *not* reliably
     re-invoke `getMenuForIndex()` just because a submenu is reopened. Item
     enablement (grayed-out state) goes stale after the first render unless you
@@ -1262,14 +1480,20 @@ purely as a structural refactor with no behavior change:
   `ScopedWatcherPause`, and the throttled-delivery timer).
 - *(user-requested polish)* — **a real visual theme.** Replaced JUCE's default
   flat-grey `LookAndFeel` with `RawdogLookAndFeel`/
-  `RawdogLookAndFeel::Palette` (dark neutral background/surface colours,
-  a blue accent, rounded tab/button/text-editor chrome), installed globally
-  via `juce::LookAndFeel::setDefaultLookAndFeel()`. Every hand-painted
-  component (`PluginListModel`, `WaveformView`, `WaveformSectionPanel`,
-  `ZoomableImageView`, `RightColumnPanel`'s viewport frame) now pulls colours
-  from the same `Palette::get()` singleton instead of raw `juce::Colours::*`
-  literals. The plugin-list search box gained a hand-drawn magnifying-glass
-  icon and a clear ("×") button (shown only once text is entered), replacing
+  `RawdogLookAndFeel::Palette`, installed globally via
+  `juce::LookAndFeel::setDefaultLookAndFeel()`. **Note: this bullet originally
+  described a dark neutral/blue-accent palette; `RawdogLookAndFeel` was later
+  re-themed (no dedicated milestone entry was added at the time) to the
+  current flat, 1-bit "Platinum Bend" look** (System 7 / Mac OS Platinum
+  chrome — flat grey panels, white sunken fields, hard black 1px borders, no
+  colour accents; see `RawdogLookAndFeel::Palette`'s `windowBg`/`surface`/
+  `ink`/`inkMuted`/`divider`/`selectedBg`/`selectedFg` fields). Every
+  hand-painted component (`PluginListModel`, `WaveformView`,
+  `WaveformSectionPanel`, `ZoomableImageView`, `RightColumnPanel`'s viewport
+  frame) now pulls colours from the same `Palette::get()` singleton instead of
+  raw `juce::Colours::*` literals. The plugin-list search box gained a
+  hand-drawn magnifying-glass icon and a clear ("×") button (shown only once
+  text is entered), replacing
   a bare `juce::TextEditor`.
 - *(user-requested feature)* — **window size/position now persists across
   relaunches.** `RawdogApplication` round-trips `DocumentWindow::
@@ -1352,6 +1576,59 @@ purely as a structural refactor with no behavior change:
   in a differently-named, differently-located folder from every other
   persisted file (see the entry above). The project directory itself was
   also renamed, `~/Documents/Projects/pixel-bender` → `~/Documents/Projects/rawdog`.
+- *(user-requested polish)* — **resizer bar affordance simplified**, through a
+  few rounds of iteration: a 3-dot grip handle was added, then given a white
+  pill-shaped backing plate for contrast, then both were removed entirely in
+  favour of the bar always showing the same faint tint previously reserved
+  for its hover/drag state (no black hairline, no handle glyph) — see the
+  "Resizable panel layout" section above for `GrippedResizerBar`'s resulting
+  z-order and corner-gap gotchas, both hit and fixed in the same pass.
+- *(user-requested polish)* — **scrollbar restyled to match the Platinum
+  theme.** `LookAndFeel_V4`'s default `drawScrollbar()` only ever painted the
+  thumb (as a rounded rectangle) and silently ignored
+  `ScrollBar::backgroundColourId` — so the plugin list's scrollbar track was
+  showing whatever was unpainted behind it (read as black) instead of the
+  intended colour. `RawdogLookAndFeel::drawScrollbar()` now fills the track
+  with `Palette::surface` (white) explicitly and draws the thumb as a
+  hard-edged rectangle instead of the default's rounded one, matching this
+  theme's flat, hard-cornered widgets elsewhere.
+- *(user-requested feature)* — **Cmd+S exports the current image, and export
+  defaults got smarter.** "Export Image..." moved from a plain,
+  shortcut-less `menu.addItem()` to a real `ApplicationCommand`
+  (`exportImageCommand`, same `menu.addCommandItem()` treatment as
+  `loadImageCommand`/`resetCommand`), so Cmd+S now works and the shortcut
+  label renders next to the menu item automatically. The suggested export
+  file also improved: a new `ExportSettingsStore` (its own
+  `juce::ApplicationProperties`-backed settings file — deliberately *not*
+  merged into `FavouritePluginsStore`/`PluginPresetsStore`'s shared
+  `"settings"` file, since those two already race each other as independent
+  `ApplicationProperties` instances over the same physical file, and this
+  avoids joining that latent bug) remembers the last folder exported to
+  across relaunches, falling back to `~/Documents` if nothing's been
+  remembered yet or the remembered folder no longer exists (e.g. an
+  unmounted drive). The suggested filename is now
+  `<loaded file's base name>_modified.png` instead of a fixed `export.png` —
+  `MainComponent::loadedImageBaseName` is set from the loaded file's name
+  (sans extension) at the same point `workingImage` itself is installed, on a
+  successful load only, and is left untouched by Reset to Original (still
+  the same source file) and by a failed load.
+- *(user-requested feature)* — **multi-plugin effect chain**, replacing the
+  one-plugin-at-a-time workaround this app shipped with from M1 onward (this
+  was previously "Plugin chaining/rack" on the deferred-v2 list — see the
+  "Multi-plugin effect chain" entry in the UI section above for the full
+  design: the `ChainSlot`/`pluginChain` data model, the chain-aware
+  `LivePreviewWorker::Request`/`runChain()`, the pedalboard-style
+  `EffectChainPanel` rack now living under a new "Effect Chain"/"Plugins"
+  top-level tab split in `LeftColumnPanel`, and the reworked Cancel-removes-
+  just-this-slot/Apply-moved-to-the-rack/new-OK-deselects-without-discarding
+  button semantics). Landed in one continuous session directly with the user
+  watching the running app, which is why the UI placement and orientation
+  iterated several times (waveform-area tab → left column; horizontal → left-
+  to-right → vertical) rather than converging on the first attempt — see the
+  UI entry above for the exact sequence and the two real bugs (a teardown-
+  ordering race in `removeChainSlot()`, a missing preview re-render in
+  `endLivePreviewSession()`) found and fixed via a code-review pass partway
+  through.
 
 ## What's NOT done yet (planned)
 
@@ -1375,10 +1652,6 @@ purely as a structural refactor with no behavior change:
 
 - **Frequency-band selection** (isolate a band within a time range, not just full-
   spectrum time selection) — needs STFT split/recombine, real DSP complexity.
-- **Plugin chaining/rack** (multiple plugins in sequence) — current UX is
-  one-plugin-at-a-time (apply, inspect, apply again manually). Parameter
-  automation (ramps) was deliberately scoped to the single currently-loaded
-  plugin for this same reason — see the Parameter automation UI entry above.
 - **TIFF support** — only worth adding once a real TIFF library (e.g. libtiff)
   manages the fragile IFD/strip-offset header, exposing just a pixel-data pointer
   to the same pipeline that already treats header-vs-pixel-bytes as protected vs.
@@ -1391,6 +1664,13 @@ purely as a structural refactor with no behavior change:
 - Pixel-highlight overlay was *also* on this deferred list originally but got
   built already (see above) — the sample-index→pixel-index mapping turned out to
   be simple enough to pull forward.
+- **Plugin chaining/rack** was *also* on this deferred list originally
+  ("current UX is one-plugin-at-a-time... Parameter automation was deliberately
+  scoped to the single currently-loaded plugin for this same reason") but has
+  since been built — see the "Multi-plugin effect chain" entry in the UI
+  section above and its Milestones entries below. Chain-wide combined presets
+  (saving/recalling the whole rack's plugins+ramps as one unit, vs. today's
+  per-slot-only "Save as Preset") remain out of scope, not built.
 
 ## Known rough edges / things a future agent should be aware of
 

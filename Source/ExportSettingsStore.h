@@ -6,10 +6,11 @@
 // string) in its own juce::ApplicationProperties-backed settings file, so a
 // later File > Export Image... starts back where the user left off rather
 // than always defaulting to Documents. Writes immediately
-// (millisecondsBeforeSaving = 0), same treatment as FavouritePluginsStore. A
-// distinct filenameSuffix from FavouritePluginsStore/PluginPresetsStore keeps
-// this in its own file rather than a second juce::ApplicationProperties
-// instance racing another one over the same underlying file.
+// (millisecondsBeforeSaving = 0) so the choice survives a hard app quit right
+// after exporting. filenameSuffix must stay distinct from
+// FavouritePluginsStore/PluginPresetsStore: each is a separate
+// juce::ApplicationProperties instance, and sharing a suffix would point two
+// instances at the same underlying file.
 class ExportSettingsStore
 {
 public:
@@ -20,7 +21,7 @@ public:
         options.filenameSuffix = "exportsettings";
         options.folderName = "RAWDOG";
         options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0; // write immediately
+        options.millisecondsBeforeSaving = 0;
         appProperties.setStorageParameters(options);
     }
 

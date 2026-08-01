@@ -203,11 +203,7 @@ void WaveformView::paint(juce::Graphics& g)
         g.drawRect(selectionRect, 1.0f);
 
         // White grip handles (with a thin black outline so they stay visible
-        // against the now-white waveform lane) at each edge -- same
-        // pill-shaped marker as ZoomableImageView's highlight-region edge
-        // handles (rotated: a vertical pill here, a horizontal one there), so
-        // the two selection affordances read as one consistent interaction
-        // language.
+        // against the waveform lane) at each edge.
         constexpr float pillLength = 28.0f, pillThickness = 5.0f;
         const float cy = height * 0.5f;
 
@@ -231,8 +227,7 @@ void WaveformView::ensureCachedTraceUpToDate()
         return;
 
     // Only reallocate when the size actually changed -- reuse the same
-    // juce::Image object across same-size regenerations, same idiom as
-    // ZoomableImageView::ensureCachedRenderUpToDate().
+    // juce::Image object across same-size regenerations.
     if (cachedTrace.getWidth() != w || cachedTrace.getHeight() != h)
         cachedTrace = juce::Image(juce::Image::RGB, w, h, false);
 
@@ -240,9 +235,8 @@ void WaveformView::ensureCachedTraceUpToDate()
 
     juce::Graphics cg(cachedTrace);
 
-    // Flat grey field (the same disabled-chrome tone used elsewhere) instead
-    // of the normal white surface when there's no image loaded -- otherwise
-    // an empty lane reads identically to a real, editable one.
+    // Flat grey field instead of the normal white surface when disabled --
+    // otherwise an empty lane reads identically to a real, editable one.
     cg.fillAll(isEnabled() ? palette.surface : palette.windowBg);
 
     const int width = w;
@@ -273,14 +267,14 @@ void WaveformView::ensureCachedTraceUpToDate()
             endSample = juce::jmin(juce::jmax(endSample, startSample + 1), viewStartSample + viewLengthSamples);
 
             // Exact min/max of the column's clamped sample range, via the
-            // bucket peak cache instead of a raw O(samples-per-column) rescan
-            // (which, totalled across columns, was an O(viewLengthSamples)
-            // message-thread pass on every rebuild -- measured at ~406ms on a
-            // 77.9M-sample buffer; see PROJECT.md's live-preview performance
-            // note). columnMinMax() preserves this loop's previous semantics
-            // exactly, including the true one-sided min/max for columns whose
-            // samples never cross zero (e.g. a colour channel's plane wherever
-            // that channel is absent) and {0,0} for a column beyond the data.
+            // bucket peak cache: a raw O(samples-per-column) rescan, totalled
+            // across columns, costs O(viewLengthSamples) on the message
+            // thread on every rebuild -- measured at ~406ms on a 77.9M-sample
+            // buffer (see PROJECT.md's live-preview performance note), which
+            // the bucket cache avoids. Includes the true one-sided min/max for
+            // columns whose samples never cross zero (e.g. a colour channel's
+            // plane wherever that channel is absent) and {0,0} for a column
+            // beyond the data.
             const auto mm = WaveformPeaks::columnMinMax(samples, numSamples, startSample, endSample, peakMins, peakMaxs);
 
             const float minV = juce::jlimit(loClamp, hiClamp, mm.minV);

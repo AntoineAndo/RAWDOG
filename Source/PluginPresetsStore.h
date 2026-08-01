@@ -4,21 +4,19 @@
 #include <optional>
 
 // Persists named parameter-state snapshots ("presets") per plugin, keyed by
-// juce::PluginDescription::createIdentifierString() -- same stable-identity
-// convention FavouritePluginsStore already uses. Backed by the same
-// juce::ApplicationProperties settings file (same applicationName/folderName,
-// a different key), but stores everything under a single "pluginPresets" key
-// as one JSON object rather than per-plugin dynamic property keys, so there's
-// no need to worry about a plugin identifier string containing characters a
-// PropertiesFile key wouldn't like:
+// juce::PluginDescription::createIdentifierString(), a stable plugin
+// identity. Backed by a juce::ApplicationProperties settings file, storing
+// everything under a single "pluginPresets" key as one JSON object -- a
+// plugin identifier string could contain characters a PropertiesFile key
+// wouldn't like, so per-plugin dynamic property keys are avoided entirely:
 //
 //   { "<identifierString>": [ { "name": "Preset 1", "state": "<base64>" }, ... ], ... }
 //
 // Each plugin's parameter state comes from juce::AudioProcessor::
 // getStateInformation() (a raw binary blob) -- base64-encoded here purely
 // because JSON has no native binary type, not for any obfuscation reason.
-// Writes immediately (millisecondsBeforeSaving = 0), same durability
-// rationale as FavouritePluginsStore.
+// Writes immediately (millisecondsBeforeSaving = 0) so a saved/renamed/deleted
+// preset survives even if the app is force-quit right after.
 class PluginPresetsStore
 {
 public:

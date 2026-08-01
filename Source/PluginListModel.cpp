@@ -14,10 +14,9 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
     auto textColour = rowIsSelected ? palette.selectedFg : palette.ink;
     auto mutedColour = rowIsSelected ? palette.selectedFg.withAlpha(0.75f) : palette.inkMuted;
 
-    // Dims every glyph on the row (not just the name, as before) so a
-    // disabled list -- no image loaded -- reads as a single greyed-out
-    // block rather than a row with one dim word floating in otherwise
-    // full-contrast chrome.
+    // Dims every glyph on the row so a disabled list -- no image loaded --
+    // reads as a single greyed-out block rather than a row with one dim word
+    // floating in otherwise full-contrast chrome.
     if (! enabled)
     {
         textColour = textColour.withMultipliedAlpha(0.4f);
@@ -316,9 +315,8 @@ void PluginListModel::confirmAndDeletePreset(const juce::String& pluginIdentifie
     juce::AlertWindow::showAsync(options, [this, pluginIdentifier, presetName](int result)
     {
         // Empirically 1 == the first button ("Delete") and 0 == the second
-        // ("Cancel") -- same button-index mapping
-        // MainComponent::confirmDiscardChangesIfNeeded relies on, not the
-        // 1/0 convention documented on the older showOkCancelBox().
+        // ("Cancel") -- not the 1/0 convention documented on the older
+        // showOkCancelBox().
         if (result != 1)
             return;
 

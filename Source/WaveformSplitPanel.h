@@ -5,14 +5,12 @@
 // Purely presentational: stacks the channel waveform lanes vertically with a
 // small colour-coded label identifying each. Holds no selection/business
 // logic of its own — MainComponent drives each WaveformView's buffer and
-// selection directly; this just parents and lays them out, same "dumb
-// container" convention as WaveformSectionPanel/LeftColumnPanel/etc.
+// selection directly; this just parents and lays them out.
 //
 // The 4th (alpha) lane is always constructed and parented, but only laid
 // out/shown when MainComponent has made it visible (a loaded PNG with a real
 // alpha channel) — for every other source (BMP, PNM, an alpha-less PNG) it
-// stays hidden and the other 3 lanes share the full height, exactly as
-// before this lane existed.
+// stays hidden and the other 3 lanes share the full height.
 class WaveformSplitPanel : public juce::Component
 {
 public:
@@ -34,6 +32,11 @@ public:
         addAndMakeVisible(blueLabel);
         addAndMakeVisible(alphaLabel);
     }
+
+    // Lets WaveformSectionPanel's mode label mention "A" only when this
+    // image actually has an alpha lane -- avoids threading a 5th reference
+    // through just to answer this one question.
+    bool hasVisibleAlphaLane() const { return alphaView.isVisible(); }
 
     void resized() override
     {

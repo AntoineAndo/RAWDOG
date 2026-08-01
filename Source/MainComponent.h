@@ -4,6 +4,8 @@
 #include <array>
 #include <optional>
 #include "BusySpinner.h"
+#include "ChainSlot.h"
+#include "EffectChainPanel.h"
 #include "ExportSettingsStore.h"
 #include "FavouritePluginsStore.h"
 #include "GrippedResizerBar.h"
@@ -87,8 +89,58 @@ private:
     void fileDragExit(const juce::StringArray& files) override;
     void filesDropped(const juce::StringArray& files, int x, int y) override;
     void exportImageClicked();
-    void loadAndOpenPlugin(int row);
-    void openEditorClicked();
+
+    // Double-clicking a plugin row always appends to pluginChain (never
+    // replaces it) and selects the new slot -- see selectChainSlot() below.
+    // Validates/instantiates the new plugin before touching pluginChain at
+    // all, so a failed load never affects any already-loaded slot.
+    void addPluginToChain(int row);
+
+    // Mounts pluginChain[index]'s native editor (+ its own Automation tab) in
+    // the left column. If a different slot is currently selected,
+    // first writes its live ramps back into ChainSlot::ramps (see
+    // refreshLivePreview()'s doc comment for why that matters) and tears its
+    // panel down before mounting the new one. A no-op if index is already
+    // selected.
+    void selectChainSlot(int index);
+
+    // Wired to PluginEditorPanel's OK button: stops showing the currently
+    // selected slot's editor (selectedChainSlot -> -1, pluginEditorPanel ->
+    // nullptr) WITHOUT touching pluginChain at all -- the slot stays in the
+    // chain, still live-previewed, exactly as it was. This is what makes
+    // "a chain session is open" (pluginChain non-empty) and "a specific
+    // slot's editor is mounted" (pluginEditorPanel non-null) two genuinely
+    // independent facts elsewhere in this class -- see the guards in
+    // refreshLivePreview()/applyLivePreviewResult() and every
+    // getCommandInfo() case, all of which key off pluginChain.empty() now,
+    // not pluginEditorPanel, so Undo/Redo/Load/Reset stay correctly disabled
+    // even with nothing selected. A no-op if nothing is currently selected.
+    void deselectChainSlot();
+
+    // Removes pluginChain[index]. Delegates to endLivePreviewSession(false)
+    // (the same teardown Cancel uses) if this is the last slot, since an
+    // empty chain is defined as "no session open." Otherwise fixes up
+    // selectedChainSlot (three cases -- see PROJECT.md/the implementation
+    // plan) and only swaps the mounted editor if the removed slot was the
+    // selected one.
+    void removeChainSlot(int index);
+
+    // Moves pluginChain[from] to land at index `to` in the resulting array
+    // (erase-then-insert, not a swap -- an arbitrary drag-to-reorder target can
+    // land anywhere, not just an adjacent slot), shifting everything strictly
+    // between the two positions by one, and fixes up selectedChainSlot to
+    // follow whichever slot it pointed at. Safe without flushing the
+    // live-preview worker: this only relocates the ChainSlot/unique_ptr value,
+    // never the pointee, so any raw AudioPluginInstance* already captured in
+    // an in-flight request stays valid.
+    void moveChainSlot(int from, int to);
+
+    void toggleChainSlotBypass(int index);
+
+    // Called after every chain mutation/selection/bypass change to re-derive
+    // the rack UI's rows from the current pluginChain/selectedChainSlot state.
+    void refreshEffectChainPanel();
+
     void applyClicked();
     void cancelEditorClicked();
     void savePresetClicked();
@@ -134,9 +186,9 @@ private:
 
     void refreshLivePreview();
 
-    // The callback LivePreviewWorker::onResultReady is wired to -- the same
-    // image/waveform-update logic refreshLivePreview()'s tail always ran
-    // synchronously, now applied whenever a background pass completes.
+    // The callback LivePreviewWorker::onResultReady is wired to, applying the
+    // same image/waveform-update logic as refreshLivePreview()'s tail whenever
+    // a background pass completes.
     // Discards a result whose epoch doesn't match livePreviewEpoch (the
     // session it was computed for already ended -- Apply/Cancel/plugin swap).
     void applyLivePreviewResult(LivePreviewWorker::Result result);
@@ -222,6 +274,14 @@ private:
     WaveformView waveformView;
     std::array<WaveformView, 4> channelWaveformViews; // indexed by (int) RawImage::Channel; lane 3 (alpha) is only ever shown for a loaded PNG with a real alpha channel
     juce::TextButton splitModeToggle { "Split Channels" };
+
+    // The effect chain "rack" -- lives under the left column's "Effect Chain"
+    // tab (see LeftColumnPanel), threaded into its constructor exactly like
+    // pluginListBox is. Its callbacks are wired in the constructor to
+    // selectChainSlot()/removeChainSlot()/moveChainSlot()/toggleChainSlotBypass(),
+    // plus onAddEffectClicked (no slot involved) to leftColumn.showPluginsTab().
+    EffectChainPanel effectChainPanel;
+
     juce::Label sampleModeLabel { {}, "Sample Mode:" };
     juce::ComboBox sampleModeCombo;
 
@@ -244,7 +304,7 @@ private:
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },
-        [this] { return pluginEditorPanel != nullptr || headerEditorPanel != nullptr || imageLoadInProgress; },
+        [this] { return ! pluginChain.empty() || headerEditorPanel != nullptr || imageLoadInProgress; },
         [this] { refreshPluginList(); },
         [this](juce::PopupMenu& menu)
         {
@@ -258,21 +318,26 @@ private:
         [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, exportImageCommand); }
     } };
 
-    // Parents the plugin list and (optionally) the currently-open PluginEditorPanel;
-    // parents the image preview, waveform section, and status label respectively.
-    // Constructed after the raw controls above (declaration order == construction
-    // order) so the references/pointers they parent are already valid.
-    LeftColumnPanel leftColumn { pluginListBox };
+    // Parents the effect-chain rack + plugin list (+ optionally the
+    // currently-open PluginEditorPanel); parents the image preview, waveform
+    // section, and status label respectively. Constructed after the raw
+    // controls above (declaration order == construction order) so the
+    // references/pointers they parent are already valid.
+    LeftColumnPanel leftColumn { pluginListBox, effectChainPanel };
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
                                     channelWaveformViews[3],
-                                    splitModeToggle, sampleModeLabel, sampleModeCombo, imageSizeLabel, previewBusySpinner };
+                                    splitModeToggle,
+                                    sampleModeLabel, sampleModeCombo, imageSizeLabel, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
     GrippedResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
 
-    // Declared before currentPlugin so it destructs (and detaches) first —
-    // member destruction order is the reverse of declaration order.
+    // Declared before pluginChain so it destructs (and detaches) first —
+    // member destruction order is the reverse of declaration order. Stays a
+    // single instance, re-attachTo()'d to whichever chain slot is currently
+    // selected/mounted -- only the selected slot ever has a live native
+    // editor a user could actually be tweaking.
     PluginParameterWatcher pluginParamWatcher;
 
     std::unique_ptr<RawImage> originalImage;
@@ -287,12 +352,24 @@ private:
 
     ExportSettingsStore exportSettingsStore;
 
-    std::unique_ptr<juce::AudioPluginInstance> currentPlugin;
+    // The effect chain, in DSP order (index 0 processed first). Empty means
+    // "no plugin session open". Only ever grown by addPluginToChain() (after a
+    // successful PluginHost::createInstance()) and fully cleared by
+    // endLivePreviewSession() (Apply and Cancel both tear down the whole
+    // chain) or by removeChainSlot() shrinking it down to zero.
+    std::vector<ChainSlot> pluginChain;
 
-    // Declared after currentPlugin as a matter of style (matching
+    // Index into pluginChain of whichever slot's editor is currently mounted
+    // in pluginEditorPanel, or -1 if nothing is selected -- which can happen
+    // even with pluginChain non-empty (see deselectChainSlot()), so this is
+    // NOT the same fact as "is a chain session open" (pluginChain.empty()).
+    // -1 whenever pluginChain itself is empty, but not only then.
+    int selectedChainSlot = -1;
+
+    // Declared after pluginChain as a matter of style (matching
     // pluginParamWatcher's ordering rationale above), but the real safety
     // guarantee is the explicit livePreviewWorker.stopThread() call in
-    // ~MainComponent(), *before* currentPlugin->releaseResources() -- not
+    // ~MainComponent(), *before* releasing any chain slot's plugin -- not
     // implicit destruction order alone. See LivePreviewWorker's own comments
     // for why processing runs here instead of on the message thread.
     LivePreviewWorker livePreviewWorker;
@@ -345,9 +422,9 @@ private:
     // buffer, otherwise) — whichever applies is what endLivePreviewSession()
     // splices back via applyChannelBytes() or applyVisualOrderedBytes()
     // respectively, instead of a full setPixelBytes(). (The rendered juce::Image
-    // and waveform float buffer built from these bytes are no longer cached
-    // here at all -- LivePreviewWorker::Result carries them directly from the
-    // worker thread to applyLivePreviewResult(), which just hands them to
+    // and waveform float buffer built from these bytes aren't cached here:
+    // LivePreviewWorker::Result carries them directly from the worker thread
+    // to applyLivePreviewResult(), which just hands them to
     // imagePreview/waveformView without needing to keep its own copy.)
     std::optional<RawImage::Channel> livePreviewChannel;
     juce::MemoryBlock livePreviewChannelPlaneBytes;
@@ -371,16 +448,56 @@ private:
     // time; starting a new one in a different lane clears the others.
     std::optional<RawImage::Channel> activeSelectionChannel;
 
+    // A frozen, re-instantiable copy of one ChainSlot -- unlike ChainSlot
+    // itself, holds no live plugin instance (unique_ptr<AudioPluginInstance>
+    // can't sit in an undo/redo stack: not copyable, and keeping N chains'
+    // worth of dormant native instances alive indefinitely is wasteful).
+    // description + pluginState (via getStateInformation(), same call
+    // savePresetClicked() already makes) are enough to recreate an
+    // equivalent, fully-configured instance later via
+    // PluginHost::createInstance() + setStateInformation() -- the same
+    // create-then-restore-state order addPluginToChain() already uses for a
+    // saved preset row.
+    struct ChainSlotSnapshot
+    {
+        juce::PluginDescription description;
+        juce::MemoryBlock pluginState;
+        std::vector<ParameterAutomation> ramps;
+        bool bypassed = false;
+    };
+
     struct EditorSnapshot
     {
         juce::MemoryBlock headerBytes;
         juce::MemoryBlock pixelBytes;
         std::optional<RawImage::Channel> selectionChannel;
         juce::Range<int> selection;
+
+        // Empty for every undo entry except the one pushed by applyClicked()
+        // (every other pushUndoState() call site only ever fires while
+        // pluginChain.empty() already holds) -- lets Undo restore not just
+        // the pre-Apply image bytes but the exact chain that produced them,
+        // instead of leaving the rack empty.
+        std::vector<ChainSlotSnapshot> chain;
     };
 
     std::vector<EditorSnapshot> undoStack;
     std::vector<EditorSnapshot> redoStack;
+
+    // Captures the current pluginChain as re-instantiable snapshots (see
+    // ChainSlotSnapshot above) -- called by pushUndoState() so an undo entry
+    // can later restore the chain, not just the image bytes it produced.
+    std::vector<ChainSlotSnapshot> captureChainSnapshot() const;
+
+    // The inverse of captureChainSnapshot(): tears down whatever's currently
+    // in pluginChain (defensive -- always empty here in practice, since
+    // Undo/Redo are only ever active while pluginChain.empty() already
+    // holds) and recreates each slot via PluginHost::createInstance() +
+    // setStateInformation(). A slot whose plugin can no longer be
+    // instantiated (uninstalled since, etc.) is skipped rather than aborting
+    // the whole restore, reported via setStatus().
+    void restoreChainFromSnapshot(const std::vector<ChainSlotSnapshot>& snapshot);
+
     juce::ApplicationCommandManager commandManager;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

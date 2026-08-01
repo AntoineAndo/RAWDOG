@@ -171,8 +171,7 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
     const int      absHeight        = (int) std::abs((int64_t) height);
     const int64_t  availableAfterHeader = (int64_t) data.getSize() - (int64_t) offBits;
 
-    // --- Native 24-bit uncompressed: keep the original header/pixel bytes
-    //     verbatim, exactly as before this loader learned about other depths. ---
+    // --- Native 24-bit uncompressed: keep the original header/pixel bytes verbatim. ---
     if (is24Rgb)
     {
         auto result = std::make_unique<RawImage>();
@@ -185,8 +184,8 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
         const int64_t rowStride64 = computeBmpRowStride(width, result->channels);
         result->rowStride = (int) rowStride64;
 
-        // Mirror loadPnm's validation: reject the file if its declared dimensions
-        // claim more pixel data than actually remains after the header.
+        // Reject the file if its declared dimensions claim more pixel data than
+        // actually remains after the header.
         const int64_t pixelDataSize64 = rowStride64 * (int64_t) result->height;
 
         if (pixelDataSize64 > availableAfterHeader)
@@ -476,10 +475,8 @@ std::unique_ptr<RawImage> RawImage::loadPng(const juce::File& file, juce::String
 
     // IHDR is always the very first chunk, at a fixed offset right after the
     // 8-byte signature (8 sig + 4 chunk length + 4 "IHDR" + 4 width + 4
-    // height + 1 bit depth = colour type at byte 25) -- reading it directly
-    // is the same "simple fixed-offset field, no general chunk-walking"
-    // approach the BMP/PNM loaders already use. This is read from the file
-    // itself rather than trusted from the decoded juce::Image below:
+    // height + 1 bit depth = colour type at byte 25). This is read from the
+    // file itself rather than trusted from the decoded juce::Image below:
     // Image::hasAlphaChannel() can't be used for this, because
     // CoreGraphicsImageType silently upgrades every decoded image to ARGB on
     // macOS regardless of the source's real alpha (see

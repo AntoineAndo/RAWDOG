@@ -29,18 +29,17 @@ public:
         // ApplicationCommandTarget machinery, same reason populateEditMenu
         // above works this way for undo/redo), so this class doesn't know the
         // command ID; it just gives MainComponent the menu to add it to. That's
-        // what makes the Cmd+O shortcut appear next to the item, matching
-        // Undo/Redo's own command-item treatment.
+        // what makes the Cmd+O shortcut appear next to the item.
         std::function<void(juce::PopupMenu&)> populateFileMenuLoadImageItem;
 
-        // Same command-item treatment as populateFileMenuLoadImageItem above,
-        // for "Reset to Original" / resetCommand (Cmd+Shift+R).
+        // Adds "Reset to Original" (resetCommand, Cmd+Shift+R) as an
+        // ApplicationCommand item, not a plain menu.addItem() -- see
+        // populateFileMenuLoadImageItem's comment above for why.
         std::function<void(juce::PopupMenu&)> populateFileMenuResetItem;
 
-        // Same command-item treatment again, for "Export Image..." /
-        // exportImageCommand (Cmd+S) -- gives the item its keyboard shortcut,
-        // replacing the plain hasWorkingImage()-gated menu.addItem() this used
-        // to be.
+        // Adds "Export Image..." (exportImageCommand, Cmd+S) as an
+        // ApplicationCommand item, not a plain menu.addItem() -- see
+        // populateFileMenuLoadImageItem's comment above for why.
         std::function<void(juce::PopupMenu&)> populateFileMenuExportItem;
     };
 

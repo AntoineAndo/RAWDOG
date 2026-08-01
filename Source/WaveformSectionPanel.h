@@ -4,12 +4,16 @@
 #include "RawdogLookAndFeel.h"
 #include "WaveformSplitPanel.h"
 
-// Ports today's fixed-pixel waveform sub-layout (a filled toolbar strip, then
-// waveform view + horizontal scrollbar row) into its own container, unchanged.
-// Not a user-resizable split, just scoped to this panel's local coordinates.
-// Also lays out the split-channel toggle button (in the toolbar strip) and
+namespace
+{
+    juce::String emDashChar() { return juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")); }
+}
+
+// Fixed-pixel waveform sub-layout: a filled toolbar strip, then waveform view
+// + horizontal scrollbar row, scoped to this panel's local coordinates (not a
+// user-resizable split). Also lays out the split-channel toggle button and
 // swaps which of the interleaved waveformViewRef / the 3-lane splitPanel
-// occupies the waveform area, based on the toggle's current state —
+// occupies the waveform area, based on the toggle's current state.
 // MainComponent owns the splitModeToggle button and drives its .onClick/
 // business logic directly; this class only reflects whichever state the
 // toggle is already in.
@@ -30,6 +34,10 @@ public:
         addAndMakeVisible(horizontalScrollBarRef);
         addAndMakeVisible(splitToggleRef);
 
+        modeLabel.setFont(RawdogLookAndFeel::chromeFont(8.0f));
+        modeLabel.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
+        addAndMakeVisible(modeLabel);
+
         updateSplitVisibility();
     }
 
@@ -42,9 +50,14 @@ public:
         waveformViewRef.setVisible(! split);
         splitPanel.setVisible(split);
 
-        // Explicit, not just relying on setBounds() below noticing a size
-        // change: which lanes are visible inside splitPanel (e.g. the alpha
-        // lane) can change without splitPanel's own overall bounds changing.
+        // "A" only shown when this image has a real alpha lane.
+        modeLabel.setText(split ? juce::String("SPLIT ") + emDashChar() + " R / G / B"
+                                    + (splitPanel.hasVisibleAlphaLane() ? " / A" : "")
+                                 : "RGB INTERLEAVED",
+                           juce::dontSendNotification);
+
+        // Lane visibility inside splitPanel (e.g. the alpha lane) can change
+        // without splitPanel's own overall bounds changing, so force a relayout.
         splitPanel.resized();
         resized();
     }
@@ -55,12 +68,8 @@ public:
         g.setColour(palette.windowBg);
         g.fillRect(toolbarBounds);
 
-        // Frames the waveform lane so it reads as a bounded surface (same
-        // convention RightColumnPanel uses for the image preview) rather than
-        // its white fill bleeding straight into the grey toolbar/scrollbar
-        // strips around it. Expanded by 1 so the outline sits just outside
-        // the waveform component's own opaque fill rather than being painted
-        // over by it.
+        // Expanded by 1 so the outline sits just outside the waveform
+        // component's own opaque fill rather than being painted over by it.
         g.setColour(palette.ink);
         g.drawRect(waveformBounds.expanded(1), 1);
     }
@@ -68,28 +77,24 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
+        area.removeFromTop(6); 
 
-        // A real toolbar strip (filled background, proper padding) rather than
-        // the split toggle sitting bare at the waveform's top-right corner --
-        // same filled-header treatment PluginListModel uses for its vendor
-        // group headers, for visual consistency between the two panels.
-        toolbarBounds = area.removeFromTop(28);
-        area.removeFromTop(4);
-
-        auto toolbar = toolbarBounds.reduced(8, 2);
+        // toolbarBounds stays full-width for paint()'s background fill;
+        // hPadding below insets its content, along with the waveform/
+        // scrollbar, so all three line up on the same left/right edge.
+        constexpr int hPadding = 10;
+        toolbarBounds = area.removeFromTop(32);
+        auto toolbar = toolbarBounds.reduced(hPadding, 6);
         splitToggleRef.setBounds(toolbar.removeFromLeft(84));
+        toolbar.removeFromLeft(8);
+        modeLabel.setBounds(toolbar);
 
-        // Fixed-height scrollbar strip carved off the bottom first, so any
-        // extra height the panel gains (dragging the outer resizer bar taller)
-        // flows into the waveform view below instead of stretching the
-        // scrollbar into an oversized handle.
+        area.removeFromTop(6); 
         auto scrollbarArea = area.removeFromBottom(16);
         area.removeFromBottom(4);
+        area = area.reduced(hPadding, 0);
+        scrollbarArea = scrollbarArea.reduced(hPadding, 0);
 
-        // No horizontal inset of its own here -- padding lives on the parent
-        // RightColumnPanel now, which already insets this whole panel's
-        // bounds from the window frame; adding another margin here would
-        // double it up.
         waveformBounds = area;
         waveformViewRef.setBounds(area);
         splitPanel.setBounds(area);
@@ -104,4 +109,5 @@ private:
     juce::Component& horizontalScrollBarRef;
     WaveformSplitPanel splitPanel;
     juce::Button& splitToggleRef;
+    juce::Label modeLabel;
 };

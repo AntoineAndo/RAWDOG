@@ -8,17 +8,15 @@
 // Loads/saves BMP (24-bit uncompressed) and PNM (raw P5/P6) files, and loads
 // PNG (any depth/colour type JUCE's own decoder handles, decoded to 8-bit
 // RGB or RGBA) and JPEG (always 3-channel RGB — JPEG has no alpha channel).
-// pixelBytes is always available for databending. For BMP specifically,
-// headerBytes is no longer fully opaque: the 5 fields that drive this app's
-// own decoding (bfOffBits/biWidth/biHeight/biBitCount/biCompression) can be
-// user-edited via applyBmpHeaderFields() — see HeaderEditorPanel. The other
-// 11 documented BMP header fields are readable via getBmpHeaderFields() but
-// never written back. PNM's headerBytes remains frozen verbatim source text,
-// with no rebuild path. PNG and JPEG have no fixed-offset "protected region"
-// the way BMP/PNM do (chunk/segment-based, compressed), so a loaded PNG or
-// JPEG's headerBytes is always empty — there is nothing to preserve or edit,
-// same rationale as the non-24bpp BMP expansion path discarding its original
-// header.
+// pixelBytes is always available for databending. For BMP specifically, the 5
+// header fields that drive this app's own decoding (bfOffBits/biWidth/
+// biHeight/biBitCount/biCompression) can be user-edited via
+// applyBmpHeaderFields() — see HeaderEditorPanel. The other 11 documented BMP
+// header fields are readable via getBmpHeaderFields() but never written back.
+// PNM's headerBytes remains frozen verbatim source text, with no rebuild
+// path. PNG and JPEG have no fixed-offset "protected region" the way BMP/PNM
+// do (chunk/segment-based, compressed), so a loaded PNG or JPEG's headerBytes
+// is always empty — there is nothing to preserve or edit.
 class RawImage
 {
 public:
@@ -79,9 +77,9 @@ public:
     // so this is just a plain restore of both blocks.
     void restoreSnapshot(juce::MemoryBlock newHeaderBytes, juce::MemoryBlock newPixelBytes);
 
-    // Explicit setter for pixelBytes, replacing a direct field assignment from
-    // outside this class — invalidates the per-channel plane cache below, the
-    // same way restoreSnapshot()/applyBmpHeaderFields() already do internally.
+    // Setter for pixelBytes — invalidates the per-channel plane cache below,
+    // just as restoreSnapshot()/applyBmpHeaderFields() do internally, so the
+    // cache never goes stale relative to whatever last touched pixelBytes.
     void setPixelBytes(juce::MemoryBlock newPixelBytes);
 
     enum class Channel { red = 0, green = 1, blue = 2, alpha = 3 };
@@ -129,13 +127,12 @@ public:
 
     // The whole-buffer (still interleaved, not deinterleaved-per-channel)
     // analogue of getChannelPlane(): pixelBytes reordered into visual
-    // top-down, unpadded row-major order. Exists for the same reason
-    // getChannelPlane() does — a bottom-up BMP's byte 0 is the image's
-    // *bottom* row, so using pixelBytes' raw offset directly as a waveform
-    // sample index made selecting the end of the (non-split) waveform
-    // highlight the top of the image instead of the bottom, and was
-    // inconsistent with the split-channel waveform (which already reorders
-    // via getChannelPlane()). Lazily cached (visualOrderDirty), invalidated
+    // top-down, unpadded row-major order. A bottom-up BMP's byte 0 is the
+    // image's *bottom* row, so this keeps the (non-split) waveform's sample
+    // index in the same top-down orientation the split-channel waveform uses
+    // via getChannelPlane() — both must agree on what a given sample index
+    // means, or the selection highlight and the waveform disagree on which
+    // end of the image is which. Lazily cached (visualOrderDirty), invalidated
     // at the same sites as the channel-plane cache. A no-op copy when the
     // layout is already canonical (PNM; a header-edited BMP with
     // bottomUp==false and no row padding) — the same remap loop handles both
@@ -160,9 +157,9 @@ public:
     bool writeToPngFile(const juce::File& file) const;
 
     // Renders the current pixelBytes (post- or pre-processing) as a plain juce::Image
-    // for preview — no selection highlight baked in (that's now drawn as a cheap line
-    // overlay by the viewing component itself; see computeHighlightOverlay() below).
-    // Backed by a lazy cache (cachedPlainImage/plainImageDirty, same idiom as
+    // for preview. The selection highlight is not baked into the pixels — it's drawn
+    // as a cheap line overlay by the viewing component itself; see computeHighlightOverlay()
+    // below. Backed by a lazy cache (cachedPlainImage/plainImageDirty, same idiom as
     // channelPlanes/visualOrderedPixelBytes below) — repeated calls with pixelBytes
     // unchanged since the last call are free.
     juce::Image toJuceImage() const;
@@ -227,9 +224,9 @@ public:
     Format getFormat() const { return format; }
 
     // Per-image, session-level choice of how pixelBytes' bytes map onto float
-    // samples for plugin processing/waveform display. Defaults to bipolar
-    // (today's behaviour); see SampleFormat.h and PROJECT.md for why unipolar
-    // exists. Not part of undo/redo history — a view setting, not an edit.
+    // samples for plugin processing/waveform display. Defaults to bipolar;
+    // see SampleFormat.h and PROJECT.md for why unipolar exists. Not part of
+    // undo/redo history — a view setting, not an edit.
     SampleFormat::Mode getSampleMode() const { return sampleMode; }
     void setSampleMode(SampleFormat::Mode newMode) { sampleMode = newMode; }
 
@@ -261,10 +258,8 @@ private:
     static std::unique_ptr<RawImage> loadPnm(const juce::File&, juce::String& errorMessage);
 
     // Decodes via juce::ImageFileFormat (JUCE's own PNG codec, already used
-    // for export), then re-packs into a fresh interleaved RGB or RGBA buffer
-    // — the same "decode externally into a plain byte-per-channel buffer"
-    // shape the non-24bpp BMP path and RawCameraConverter already use, since
-    // PNG's own on-disk layout (chunked, DEFLATE-compressed) has no simple
+    // for export), then re-packs into a fresh interleaved RGB or RGBA buffer,
+    // since PNG's own on-disk layout (chunked, DEFLATE-compressed) has no simple
     // "protected header region" to preserve. JUCE's Image is always 8 bits
     // per channel, so there's no 16-bit-PNG precision loss to handle here —
     // the decoder itself normalises to that. Accepted tradeoff: an RGBA
@@ -344,8 +339,8 @@ private:
     // channelPlanes/visualOrderedPixelBytes above, invalidated at exactly the
     // same pixelBytes-mutation sites. toJuceImageFromBytesScoped() copies this
     // (juce::Image::duplicateIfShared() — a real memcpy, NOT free, but far
-    // cheaper than the per-pixel colour-conversion loop it replaces for
-    // whichever rows didn't change) and only re-renders the rows that did.
+    // cheaper than running the per-pixel colour-conversion loop over rows that
+    // haven't changed) and only re-renders the rows that did.
     mutable juce::Image cachedPlainImage;
     mutable bool plainImageDirty = true;
 

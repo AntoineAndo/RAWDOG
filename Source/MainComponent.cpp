@@ -28,8 +28,12 @@ MainComponent::MainComponent()
     imagePreview.onHighlightRegionDragStart = [this]
     {
         // Same "don't push an undo entry mid-live-preview-session" rationale
-        // as waveformView.onBeforeSelectionChange below.
-        if (pluginEditorPanel == nullptr)
+        // as waveformView.onBeforeSelectionChange below. Keyed on the chain
+        // itself, not on whether a specific slot's editor is mounted --
+        // deselecting a slot (OK button) doesn't end the session, so a
+        // selection change with nothing selected still shouldn't push its
+        // own undo entry.
+        if (pluginChain.empty())
             pushUndoState();
     };
 
@@ -54,10 +58,10 @@ MainComponent::MainComponent()
     waveformView.onSelectionChanged = [this] { triggerAsyncUpdate(); };
     waveformView.onBeforeSelectionChange = [this]
     {
-        // While a live-preview panel is open, a new selection drag only rescopes
+        // While a chain session is open, a new selection drag only rescopes
         // the uncommitted preview (see onSelectionChanged above) — nothing has
         // been committed yet, so this must not push an undo entry.
-        if (pluginEditorPanel == nullptr)
+        if (pluginChain.empty())
             pushUndoState();
     };
 
@@ -68,8 +72,18 @@ MainComponent::MainComponent()
     sampleModeCombo.addItem("Unipolar", 2);
     sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
     sampleModeCombo.onChange = [this] { sampleModeChanged(); };
-    sampleModeLabel.setVisible(false);
-    sampleModeCombo.setVisible(false); // hidden until a plugin panel opens
+
+    // Placeholder shown until a real image loads and updateImageSizeLabel()
+    // overwrites it -- matches the design mockup's disabled-state dimensions
+    // readout rather than leaving this blank.
+    imageSizeLabel.setText(juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " x "
+                            + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + "  -  "
+                            + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " MB",
+                            juce::dontSendNotification);
+
+    // Always visible, matching the design mockup, which keeps Sample Mode
+    // visible-but-greyed rather than hidden outright. updatePluginListEnablement()
+    // below still gates whether it's actually *interactive* on chainSessionOpen.
 
     for (int c = 0; c < 4; ++c)
     {
@@ -89,7 +103,7 @@ MainComponent::MainComponent()
                 if (other != c)
                     channelWaveformViews[(size_t) other].setSelectionSampleRange({});
 
-            if (pluginEditorPanel == nullptr)
+            if (pluginChain.empty())
                 pushUndoState();
         };
     }
@@ -104,13 +118,27 @@ MainComponent::MainComponent()
     pluginParamWatcher.onPluginParametersChanged = [this] { refreshLivePreview(); };
     pluginParamWatcher.onParameterValueChanged = [this](const juce::String& parameterName, const juce::String& valueText)
     {
-        if (currentPlugin != nullptr)
-            setStatus(currentPlugin->getName() + " — " + parameterName + ": " + valueText);
+        if (selectedChainSlot >= 0)
+            setStatus(pluginChain[(size_t) selectedChainSlot].plugin->getName() + " — " + parameterName + ": " + valueText);
     };
+
+    effectChainPanel.onSelectSlot = [this](int index) { selectChainSlot(index); };
+    effectChainPanel.onRemoveSlot = [this](int index) { removeChainSlot(index); };
+    effectChainPanel.onReorderSlot = [this](int from, int to) { moveChainSlot(from, to); };
+    effectChainPanel.onToggleBypass = [this](int index) { toggleChainSlotBypass(index); };
+    effectChainPanel.onAddEffectClicked = [this] { leftColumn.showPluginsTab(); };
+    effectChainPanel.onApplyClicked = [this] { applyClicked(); };
+
+    // Every other rebuild() call happens after a chain mutation -- this is
+    // the one-time "initial empty state" case, needed so Content actually
+    // constructs its Add Effect row/connectors (built fresh inside rebuild(),
+    // never in Content's own constructor) before the very first resized()
+    // pass computes the rack's preferred scroll height against them.
+    refreshEffectChainPanel();
 
     pluginListBox.setModel(&listModel);
     pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
-    listModel.onDoubleClick = [this](int row) { loadAndOpenPlugin(row); };
+    listModel.onDoubleClick = [this](int row) { addPluginToChain(row); };
     listModel.onFavouritesChanged = [this] { pluginListBox.updateContent(); pluginListBox.repaint(); };
 
     // The model has no reference back to pluginListBox (it deliberately doesn't
@@ -141,7 +169,7 @@ MainComponent::MainComponent()
         pluginListBox.repaint();
     };
 
-    setStatus("Load a BMP, PNM, PNG, or JPEG image, then double-click a plugin to load it and tweak/apply.");
+    setStatus("Ready " + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " open an image to begin.");
     updatePluginListEnablement();
 
     setSize(900, 700);
@@ -151,8 +179,8 @@ MainComponent::MainComponent()
         listModel.refresh();
         pluginListBox.updateContent();
         pluginListBox.repaint();
-        setStatus("Loaded " + juce::String(scanner.getKnownPluginList().getNumTypes())
-                    + " cached plugin(s). Use Rescan Plugins to refresh.");
+        setStatus("Ready " + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " open an image to begin. ("
+                    + juce::String(scanner.getKnownPluginList().getNumTypes()) + " cached plugin(s) loaded.)");
     }
     else
     {
@@ -179,9 +207,9 @@ MainComponent::~MainComponent()
     pluginParamWatcher.attachTo(nullptr);
 
     // Clear leftColumn's non-owning pointer before pluginEditorPanel is destroyed
-    // below (member destruction order), for consistency with the other teardown
-    // sites (openEditorClicked/endLivePreviewSession) even though Component's own
-    // destructor already self-detaches from its parent's child list.
+    // below (member destruction order); redundant since Component's own
+    // destructor already self-detaches from its parent's child list, but
+    // harmless to state explicitly.
     leftColumn.setEditorPanel(nullptr);
 
     // Neutralize any queued/future load completion before anything below is
@@ -196,15 +224,16 @@ MainComponent::~MainComponent()
     // timeout: RAW decodes legitimately take seconds.
     imageLoaderPool.removeAllJobs(true, 15000);
 
-    // Full shutdown, not just idle-draining: must happen before
-    // currentPlugin->releaseResources() below, since the worker may still be
-    // inside plugin.processBlock() on it. stopThread() lets any in-flight
+    // Full shutdown, not just idle-draining: must happen before releasing any
+    // chain slot's plugin below, since the worker may still be inside
+    // plugin.processBlock() on one of them. stopThread() lets any in-flight
     // pass finish naturally first (run()'s loop only checks
     // threadShouldExit() between jobs) before forcing the issue.
     livePreviewWorker.shutdown(5000);
 
-    if (currentPlugin != nullptr)
-        currentPlugin->releaseResources();
+    for (auto& slot : pluginChain)
+        if (slot.plugin != nullptr)
+            slot.plugin->releaseResources();
 }
 
 void MainComponent::setStatus(const juce::String& text)
@@ -233,9 +262,9 @@ void MainComponent::refreshPluginList()
 
         auto status = "Found " + juce::String(scanner.getKnownPluginList().getNumTypes()) + " plugin(s).";
 
-        // Plugins that crashed the scan last time are now being skipped
-        // rather than re-probed (see PluginScanner's dead man's pedal file) —
-        // surface that so a rescan showing fewer plugins than expected isn't
+        // Plugins that crashed a previous scan are skipped rather than
+        // re-probed (see PluginScanner's dead man's pedal file) — surface
+        // that so a rescan showing fewer plugins than expected isn't
         // mistaken for a scanning bug.
         const auto& skippedCrashers = scanner.getLastSkippedCrashers();
 
@@ -265,8 +294,14 @@ void MainComponent::undoClicked()
     if (undoStack.empty() || workingImage == nullptr)
         return;
 
+    // Trivially empty in practice (Undo is only ever active while
+    // pluginChain.empty() already holds -- see getCommandInfo()'s
+    // undoCommand case), but captured uniformly via the same helper
+    // pushUndoState() uses rather than special-casing "chain is always
+    // empty here."
     const auto currentScope = getCurrentSelectionScope();
-    redoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel, currentScope.range });
+    redoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel,
+                           currentScope.range, captureChainSnapshot() });
     const auto entry = undoStack.back();
     undoStack.pop_back();
 
@@ -274,6 +309,7 @@ void MainComponent::undoClicked()
     updateWaveform();
     restoreSelectionScope(entry.selectionChannel, entry.selection);
     updatePreview();
+    restoreChainFromSnapshot(entry.chain); // no-op (empty) unless this entry was pushed by applyClicked()
     menuModel.menuItemsChanged();
     setStatus("Undid last action.");
 }
@@ -284,7 +320,8 @@ void MainComponent::redoClicked()
         return;
 
     const auto currentScope = getCurrentSelectionScope();
-    undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel, currentScope.range });
+    undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, currentScope.channel,
+                           currentScope.range, captureChainSnapshot() });
     const auto entry = redoStack.back();
     redoStack.pop_back();
 
@@ -292,6 +329,7 @@ void MainComponent::redoClicked()
     updateWaveform();
     restoreSelectionScope(entry.selectionChannel, entry.selection);
     updatePreview();
+    restoreChainFromSnapshot(entry.chain);
     menuModel.menuItemsChanged();
     setStatus("Redid last action.");
 }
@@ -301,7 +339,8 @@ void MainComponent::pushUndoState()
     if (workingImage != nullptr)
     {
         const auto scope = getCurrentSelectionScope();
-        undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, scope.channel, scope.range });
+        undoStack.push_back({ workingImage->headerBytes, workingImage->pixelBytes, scope.channel, scope.range,
+                               captureChainSnapshot() });
     }
 
     redoStack.clear();
@@ -412,21 +451,27 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // the outgoing image and push a redo entry that the install then
             // clobbers. JUCE re-queries this at key-press time, so gating here
             // covers the shortcut, not just the menu item.
-            result.setActive(! undoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            // Gated on pluginChain.empty(), not pluginEditorPanel -- a chain
+            // session stays "open" (blocking Undo) even with nothing
+            // currently selected (see deselectChainSlot()'s doc comment).
+            result.setActive(! undoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case redoCommand:
             result.setInfo("Redo", "Redo the last undone action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
-            result.setActive(! redoStack.empty() && pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            result.setActive(! redoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case cancelEditorCommand:
             // Not shown in any menu (setInfo's category/shortcut text is only
             // ever surfaced if this were added to a PopupMenu, which it isn't) —
             // purely a keyboard shortcut, mirroring whichever panel's own
-            // Cancel button is currently on-screen.
-            result.setInfo("Cancel Editor", "Cancel the currently open plugin or header editor panel", "Edit", 0);
+            // Cancel button is currently on-screen. Deliberately still gated
+            // on pluginEditorPanel specifically (not pluginChain.empty()):
+            // Cancel removes whichever slot is selected, so there's
+            // nothing for it to do with no slot mounted.
+            result.setInfo("Cancel Editor", "Remove the selected chain slot, or cancel the header edit", "Edit", 0);
             result.addDefaultKeypress(juce::KeyPress::escapeKey, juce::ModifierKeys());
             result.setActive(pluginEditorPanel != nullptr || headerEditorPanel != nullptr);
             break;
@@ -434,38 +479,38 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
         case loadImageCommand:
             // Backs the File > Load Image... menu item itself (see
             // menuModel's populateFileMenuLoadImageItem callback) as well as
-            // the Cmd+O shortcut. Same gating as the item's previous plain-
-            // menu enablement (isPanelOpen() in MainMenuModel::Callbacks) plus
-            // ! imageLoadInProgress, since loadImageClicked() itself would
-            // otherwise just no-op mid-load anyway -- keeping it inactive here
-            // is more honest than a shortcut that silently does nothing.
+            // the Cmd+O shortcut. Must mirror isPanelOpen() in
+            // MainMenuModel::Callbacks so the shortcut and the menu item never
+            // disagree, plus ! imageLoadInProgress, since loadImageClicked()
+            // itself would otherwise just no-op mid-load anyway -- keeping it
+            // inactive here is more honest than a shortcut that silently does
+            // nothing.
             result.setInfo("Load Image...", "Load a BMP, PNM, PNG, or JPEG image", "File", 0);
             result.addDefaultKeypress('o', juce::ModifierKeys::commandModifier);
-            result.setActive(pluginEditorPanel == nullptr && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            result.setActive(pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case resetCommand:
             // Backs the File > Reset to Original menu item (see menuModel's
             // populateFileMenuResetItem callback) as well as the Cmd+Shift+R
-            // shortcut. Same gating as the item's previous plain-menu
-            // enablement (hasOriginalImage() && isPanelOpen() in
-            // MainMenuModel::Callbacks) plus ! imageLoadInProgress.
+            // shortcut. Must mirror hasOriginalImage() && isPanelOpen() in
+            // MainMenuModel::Callbacks so the shortcut and the menu item never
+            // disagree, plus ! imageLoadInProgress.
             result.setInfo("Reset to Original", "Discard all edits and revert to the originally loaded image", "File", 0);
             result.addDefaultKeypress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
-            result.setActive(originalImage != nullptr && pluginEditorPanel == nullptr
+            result.setActive(originalImage != nullptr && pluginChain.empty()
                               && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case exportImageCommand:
             // Backs the File > Export Image... menu item (see menuModel's
             // populateFileMenuExportItem callback) as well as the Cmd+S
-            // shortcut. Same gating as the item's previous plain-menu
-            // enablement (hasWorkingImage() && ! panelOpen in
-            // MainMenuModel::Callbacks) plus ! imageLoadInProgress, matching
-            // loadImageCommand/resetCommand's treatment above.
+            // shortcut. Must mirror hasWorkingImage() && ! panelOpen in
+            // MainMenuModel::Callbacks so the shortcut and the menu item never
+            // disagree, plus ! imageLoadInProgress.
             result.setInfo("Export Image...", "Export the current image as a PNG", "File", 0);
             result.addDefaultKeypress('s', juce::ModifierKeys::commandModifier);
-            result.setActive(workingImage != nullptr && pluginEditorPanel == nullptr
+            result.setActive(workingImage != nullptr && pluginChain.empty()
                               && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
@@ -540,16 +585,22 @@ void MainComponent::updatePluginListEnablement()
 {
     const bool hasImage = workingImage != nullptr;
 
-    // Hard-walled off while the header editor is open, separately from the
-    // plugin-editor case: double-clicking a plugin mid-header-edit would
-    // otherwise silently discard the in-progress edit via loadAndOpenPlugin()'s
-    // own panel-swap logic, which is a worse surprise than just disabling the
-    // list outright.
-    const bool listInteractive = hasImage && headerEditorPanel == nullptr && ! imageLoadInProgress;
-    pluginListBox.setEnabled(listInteractive);
-    listModel.setEnabled(listInteractive);
-    leftColumn.setListControlsEnabled(listInteractive);
+    // Hard-walled off while the header editor is open or a load is in
+    // flight, but deliberately NOT on hasImage -- browsing/searching the
+    // plugin list is useful even with nothing loaded yet; only actually
+    // *loading* a plugin needs an image, and addPluginToChain() itself
+    // guards that (double-clicking a row without an image is a no-op there).
+    const bool listBrowsable = headerEditorPanel == nullptr && ! imageLoadInProgress;
+    pluginListBox.setEnabled(listBrowsable);
+    listModel.setEnabled(listBrowsable);
+    leftColumn.setListControlsEnabled(listBrowsable);
     pluginListBox.repaint();
+
+    // The chain rack itself still requires an image (there's nothing for a
+    // chain to process without one), unlike the browser above.
+    const bool chainInteractive = hasImage && headerEditorPanel == nullptr && ! imageLoadInProgress;
+    effectChainPanel.setEnabled(chainInteractive);
+    effectChainPanel.setHasImage(hasImage);
 
     // pluginListBox.setEnabled() above doesn't reach its own internal
     // Viewport scrollbar -- juce::ScrollBar's mouseDown/mouseDrag never check
@@ -561,8 +612,8 @@ void MainComponent::updatePluginListEnablement()
     // be dragged, scrolled, or hovered, and the cursor over it behaves as if
     // it isn't there.
     auto& listScrollBar = pluginListBox.getVerticalScrollBar();
-    listScrollBar.setEnabled(listInteractive);
-    listScrollBar.setInterceptsMouseClicks(listInteractive, listInteractive);
+    listScrollBar.setEnabled(listBrowsable);
+    listScrollBar.setInterceptsMouseClicks(listBrowsable, listBrowsable);
 
     horizontalScrollBar.setEnabled(hasImage);
 
@@ -575,28 +626,33 @@ void MainComponent::updatePluginListEnablement()
 
     horizontalScrollBar.setVisible(hasImage);
     splitModeToggle.setVisible(hasImage);
+    rightColumn.setHasImage(hasImage);
 
-    // The bipolar/unipolar dropdown is only relevant while the plugin editor
-    // panel is open — this function already runs after every open/close.
-    const bool pluginPanelOpen = pluginEditorPanel != nullptr;
-    sampleModeLabel.setVisible(pluginPanelOpen);
-    sampleModeCombo.setVisible(pluginPanelOpen);
+    // The bipolar/unipolar dropdown is only relevant while a chain session is
+    // open — this function already runs after every open/close. Keyed on
+    // pluginChain (the session), not pluginEditorPanel (a specific mounted
+    // slot): sample mode affects the whole chain's live preview regardless of
+    // whether any one slot is currently selected for editing.
+    const bool chainSessionOpen = ! pluginChain.empty();
+    sampleModeLabel.setEnabled(chainSessionOpen);
+    sampleModeCombo.setEnabled(chainSessionOpen);
 
     // Split-channel view only makes sense for a 3- or 4-channel chunky image
     // (BMP-24bit/PNM-P6/PNG) and never while the header editor is open (a live BMP
     // header edit can change biBitCount away from 24, making hasChannelPlanes()
     // false mid-edit, and header edits have no per-channel meaning at all).
-    // Toggling it is *also* disabled while a plugin panel is open: the live-
+    // Toggling it is *also* disabled while a chain session is open: the live-
     // preview worker thread renders directly from RawImage's own render/plane
-    // caches during a session (see LivePreviewWorker's live-preview-performance
-    // note), and those caches are only safe to touch from one thread at a
-    // time -- toggling split mode would call getChannelPlane()/toJuceImage()
-    // on the message thread concurrently with the worker. Note this disables
-    // *toggling*, not the feature itself: an already-on split mode started
-    // before the panel opened stays on and fully live-editable for the whole
-    // session (channel-scoped Apply is a supported, unrelated code path).
+    // caches whenever the chain is non-empty (see LivePreviewWorker's
+    // live-preview-performance note), and those caches are only safe to touch
+    // from one thread at a time -- toggling split mode would call
+    // getChannelPlane()/toJuceImage() on the message thread concurrently with
+    // the worker. Note this disables *toggling*, not the feature itself: an
+    // already-on split mode started before the session opened stays on and
+    // fully live-editable for the whole session (channel-scoped Apply is a
+    // supported, unrelated code path).
     const bool splitMeaningful = hasImage && headerEditorPanel == nullptr && workingImage->hasChannelPlanes();
-    splitModeToggle.setEnabled(splitMeaningful && ! pluginPanelOpen && ! imageLoadInProgress);
+    splitModeToggle.setEnabled(splitMeaningful && ! chainSessionOpen && ! imageLoadInProgress);
 
     if (! splitMeaningful && splitModeToggle.getToggleState())
         setSplitMode(false);
@@ -635,7 +691,10 @@ void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, doubl
 
 void MainComponent::handleAsyncUpdate()
 {
-    if (pluginEditorPanel != nullptr)
+    // Keyed on the chain itself, not on whether a specific slot happens to be
+    // selected -- a still-open (non-empty) chain must keep reprocessing on
+    // every selection change even with nothing currently mounted for editing.
+    if (! pluginChain.empty())
         refreshLivePreview(); // must still reprocess bytes -- the glitched region itself re-scopes
     else if (workingImage != nullptr)
         updateHighlightOverlay(*workingImage, getCurrentSelectionScope()); // selection-only change: no image rebuild needed at all

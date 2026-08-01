@@ -6,9 +6,8 @@
 #include "WaveformSectionPanel.h"
 
 // Parents the image preview, a WaveformSectionPanel, and the status label.
-// Carves the fixed 24px status strip off the bottom first (unchanged from
-// today), then splits the remainder into preview/waveform via its own
-// user-draggable divider.
+// Carves the fixed 24px status strip off the bottom first, then splits the
+// remainder into preview/waveform via its own user-draggable divider.
 class RightColumnPanel : public juce::Component
 {
 public:
@@ -59,19 +58,37 @@ public:
     // Forwarded down to WaveformSectionPanel — see its own doc comment.
     void updateSplitVisibility() { waveformSection.updateSplitVisibility(); }
 
+    // With no image loaded there's no waveform to show at all -- the section
+    // (and its divider) is hidden entirely rather than shown empty/disabled,
+    // and the image preview fills the whole column instead.
+    void setHasImage(bool hasImageIn)
+    {
+        hasImage = hasImageIn;
+        waveformSection.setVisible(hasImage);
+        resizerBar.setVisible(hasImage);
+        resized();
+    }
+
     // ZoomableImageView draws its own hard-shadow + border directly around
     // the actual image canvas (baked into its cached render alongside the
     // dot-mat background), since only it knows the image's current on-screen
-    // rect at the active zoom/pan -- framing the whole viewport from here (as
-    // an earlier version of this pass did) drew the shadow/border around
-    // empty letterboxed margins too whenever the image didn't fill the
-    // viewport. This paint() only separates the Sample Mode/size strip from
-    // the preview below it.
+    // rect at the active zoom/pan -- framing the whole viewport from here
+    // would draw the shadow/border around empty letterboxed margins too
+    // whenever the image didn't fill the viewport. This paint() only
+    // separates the Sample Mode/size strip from the preview below it.
     void paint(juce::Graphics& g) override
     {
-        g.setColour(RawdogLookAndFeel::Palette::get().ink);
+        const auto& palette = RawdogLookAndFeel::Palette::get();
+        g.setColour(palette.ink);
         g.drawLine((float) contentBounds.getX(), (float) sampleModeStripBottom,
                    (float) contentBounds.getRight(), (float) sampleModeStripBottom, 1.0f);
+
+        // Separates the status strip from the preview/waveform above it --
+        // same hard 1px chrome-border convention as the Sample Mode strip's
+        // own bottom line above.
+        g.setColour(palette.ink);
+        g.drawLine((float) contentBounds.getX(), (float) statusStripTop,
+                   (float) contentBounds.getRight(), (float) statusStripTop, 1.0f);
     }
 
     void resized() override
@@ -79,13 +96,13 @@ public:
         // Padding lives on the panel as a whole -- inset once here so the
         // status strip, Sample Mode/size strip, image preview, and waveform
         // section all share the same margin from the window frame, rather
-        // than each one carving out its own (WaveformSectionPanel no longer
-        // insets its own waveform lane for this same reason).
+        // than each one carving out its own.
         constexpr int margin = 8;
         contentBounds = getLocalBounds().reduced(margin, margin);
         auto area = contentBounds;
 
         auto statusArea = area.removeFromBottom(24);
+        statusStripTop = statusArea.getY();
         area.removeFromBottom(8);
 
         // Spinner square on the left of the status strip, text after it --
@@ -109,6 +126,12 @@ public:
         // dimension readout -- taking up whatever's left of this strip.
         imageSizeLabelRef.setBounds(sampleModeArea);
 
+        if (! hasImage)
+        {
+            imagePreviewRef.setBounds(area);
+            return;
+        }
+
         juce::Component* items[] = { &imagePreviewRef, &resizerBar, &waveformSection };
         layout.layOutComponents(items, 3, area.getX(), area.getY(),
                                  area.getWidth(), area.getHeight(),
@@ -121,8 +144,10 @@ public:
     }
 
 private:
+    bool hasImage = false;
     juce::Rectangle<int> contentBounds;
     int sampleModeStripBottom = 0;
+    int statusStripTop = 0;
     juce::Component& imagePreviewRef;
     juce::Label& statusLabelRef;
     juce::Label& sampleModeLabelRef;

@@ -43,8 +43,6 @@ private:
         arc.addCentredArc(bounds.getCentreX(), bounds.getCentreY(), radius, radius,
                           rotationRadians, 0.0f, juce::MathConstants<float>::twoPi * 0.75f, true);
 
-        // Matches the status text's colour in whatever LookAndFeel is active,
-        // since the spinner sits right next to it.
         g.setColour(findColour(juce::Label::textColourId));
         g.strokePath(arc, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }

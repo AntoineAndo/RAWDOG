@@ -2,10 +2,21 @@
 #include "RawdogLookAndFeel.h"
 #include <cmath>
 
+ZoomableImageView::ZoomableImageView()
+{
+    // A real child, not just a click-anywhere affordance -- reads as an
+    // actual call to action, matching the design mockup. Fires the exact
+    // same callback the whole-area click already does; no new callback
+    // surface needed.
+    addAndMakeVisible(chooseFileButton);
+    chooseFileButton.onClick = [this] { if (onClickWithNoImage) onClickWithNoImage(); };
+}
+
 void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
 {
     image = std::move(newImage);
     invalidateCachedRender();
+    chooseFileButton.setVisible(! image.isValid());
 
     if (resetView)
         fitToView();
@@ -41,6 +52,8 @@ void ZoomableImageView::setFastResampling(bool shouldUseFastResampling)
 
 void ZoomableImageView::resized()
 {
+    chooseFileButton.setBounds(getPlaceholderLayout().button);
+
     if (! image.isValid())
         return;
 
@@ -49,27 +62,120 @@ void ZoomableImageView::resized()
         fitToView();
 }
 
+juce::Rectangle<int> ZoomableImageView::getCardBounds() const
+{
+    auto bounds = getLocalBounds();
+
+    // Roughly half the view's own size, centred -- clamped to a sane minimum
+    // so the icon/title/subtitle/button block below still fits on a small
+    // window rather than the card shrinking past its own content.
+    const int width = juce::jmax(240, bounds.getWidth() / 2);
+    const int height = juce::jmax(200, bounds.getHeight() / 2);
+
+    return juce::Rectangle<int>(width, height).withCentre(bounds.getCentre());
+}
+
+ZoomableImageView::PlaceholderLayout ZoomableImageView::getPlaceholderLayout() const
+{
+    constexpr int iconSize = 60;
+    constexpr int titleHeight = 22;
+    constexpr int subtitleHeight = 16;
+    constexpr int buttonWidth = 150;
+    constexpr int buttonHeight = 28;
+    constexpr int gapAfterIcon = 14;
+    constexpr int gapAfterTitle = 6;
+    constexpr int gapAfterSubtitle = 14;
+    constexpr int totalHeight = iconSize + gapAfterIcon + titleHeight + gapAfterTitle
+                                + subtitleHeight + gapAfterSubtitle + buttonHeight;
+
+    auto bounds = getCardBounds();
+    const int cx = bounds.getCentreX();
+    int y = bounds.getCentreY() - totalHeight / 2;
+
+    PlaceholderLayout result;
+    result.icon = juce::Rectangle<int>(iconSize, iconSize).withCentre({ cx, y + iconSize / 2 });
+    y += iconSize + gapAfterIcon;
+    result.title = juce::Rectangle<int>(bounds.getWidth(), titleHeight).withX(bounds.getX()).withY(y);
+    y += titleHeight + gapAfterTitle;
+    result.subtitle = juce::Rectangle<int>(bounds.getWidth(), subtitleHeight).withX(bounds.getX()).withY(y);
+    y += subtitleHeight + gapAfterSubtitle;
+    result.button = juce::Rectangle<int>(buttonWidth, buttonHeight).withCentre({ cx, y + buttonHeight / 2 });
+
+    return result;
+}
+
 void ZoomableImageView::paint(juce::Graphics& g)
 {
     if (! image.isValid())
     {
+        // Dot-matted "workspace mat" texture for the area OUTSIDE the dashed
+        // card -- same background this view uses once an image is loaded and
+        // doesn't fill the viewport (letterboxing), just without an image on
+        // top of it yet.
         RawdogLookAndFeel::drawDotMat(g, getLocalBounds());
 
         const auto& palette = RawdogLookAndFeel::Palette::get();
+        const auto layout = getPlaceholderLayout();
 
-        if (fileDragHover)
+        // The card itself: plain white, matching the design mockup -- only
+        // the area actually delimited by the dashed border is white, not the
+        // whole view. Roughly half the view's size (see getCardBounds()), not
+        // a fixed inset from the edges.
+        auto dashBounds = getCardBounds().toFloat();
+        g.setColour(palette.surface);
+        g.fillRect(dashBounds);
+
+        // Dashed inset border framing the drop zone. Thicker/darker while a
+        // file is being dragged over, layered onto the same default look
+        // rather than swapping to a wholly different one.
+        juce::Path outline;
+        outline.addRectangle(dashBounds);
+        juce::Path dashedOutline;
+        const float dashLengths[] = { 6.0f, 4.0f };
+        juce::PathStrokeType(fileDragHover ? 2.0f : 1.0f).createDashedStroke(dashedOutline, outline, dashLengths, 2);
+        g.setColour(fileDragHover ? palette.ink : palette.divider);
+        g.fillPath(dashedOutline);
+
+        // Small generic document icon: bordered rect, folded top-right
+        // corner, dot-matted "content" patch -- evokes an image file without
+        // needing a bundled icon asset.
         {
-            g.setColour(palette.ink.withAlpha(0.08f));
-            g.fillRect(getLocalBounds());
+            auto iconBounds = layout.icon.toFloat();
+            g.setColour(palette.surface);
+            g.fillRect(iconBounds);
             g.setColour(palette.ink);
-            g.drawRect(getLocalBounds(), 2);
-            g.drawText("Drop image to load", getLocalBounds(), juce::Justification::centred);
+            g.drawRect(iconBounds, 1.5f);
+
+            constexpr float foldSize = 14.0f;
+            juce::Path fold;
+            fold.startNewSubPath(iconBounds.getRight() - foldSize, iconBounds.getY());
+            fold.lineTo(iconBounds.getRight(), iconBounds.getY() + foldSize);
+            fold.lineTo(iconBounds.getRight() - foldSize, iconBounds.getY() + foldSize);
+            fold.closeSubPath();
+            g.setColour(palette.windowBg);
+            g.fillPath(fold);
+            g.setColour(palette.ink);
+            g.strokePath(fold, juce::PathStrokeType(1.0f));
+
+            auto contentPatch = iconBounds.reduced(8.0f).withTrimmedTop(foldSize);
+            RawdogLookAndFeel::drawDotMat(g, contentPatch.toNearestInt());
+            g.setColour(palette.ink);
+            g.drawRect(contentPatch, 1.0f);
         }
-        else
-        {
-            g.setColour(palette.inkMuted);
-            g.drawText("Click or drop an image to load", getLocalBounds(), juce::Justification::centred);
-        }
+
+        g.setColour(fileDragHover ? palette.ink : palette.inkMuted);
+        g.setFont(RawdogLookAndFeel::chromeFont(13.0f));
+        g.drawText(fileDragHover ? "DROP TO LOAD" : "DROP AN IMAGE HERE", layout.title, juce::Justification::centred);
+
+        // The app's actual supported formats -- deliberately not copying the
+        // design mockup's "PNG, JPEG, TIFF or BMP" verbatim: this app does
+        // not support TIFF (see RawImage's deferred-TIFF note) and does
+        // support PNM/PPM/PGM and RAF/DNG camera raw (same extension set as
+        // MainComponentImageIO.cpp's isAcceptableImageFile()/FileChooser
+        // wildcard).
+        g.setFont(juce::Font(juce::FontOptions(12.0f)));
+        g.setColour(palette.inkMuted);
+        g.drawText("BMP, PNM, PNG, JPEG, RAF or DNG", layout.subtitle, juce::Justification::centred);
         return;
     }
 
@@ -87,8 +193,7 @@ void ZoomableImageView::paint(juce::Graphics& g)
         g.drawRect(screenRect, 1.5f);
 
         // Handle bars at each edge: a thicker line plus a small centred grip
-        // pill, full width -- the vertical-drag equivalent of WaveformView's
-        // own selection-handle grip marks.
+        // pill, full width.
         constexpr float pillWidth = 28.0f, pillHeight = 5.0f;
         const float cx = screenRect.getCentreX();
 
@@ -291,8 +396,7 @@ void ZoomableImageView::mouseDrag(const juce::MouseEvent& e)
         case HighlightDragMode::resizingTop:
         {
             // jmax guards against an inverted jlimit range when the anchor
-            // sits at (or near) row 0 -- same rationale as WaveformView's
-            // resizingLeft guard.
+            // sits at (or near) row 0.
             const int upperBound = juce::jmax(0, dragAnchorRow - 1);
             highlightRegion->topRow = juce::jlimit(0, upperBound, cursorRow);
             highlightRegion->bottomRow = dragAnchorRow;

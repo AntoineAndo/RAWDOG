@@ -34,12 +34,10 @@ namespace SampleFormat
         const auto* in = buffer.getReadPointer(0);
         const int numSamples = juce::jmin((int) bytes.getSize(), buffer.getNumSamples());
 
-        // Single clamp applied to the float *after* the scale/offset, instead of
-        // a pre-scale float clamp followed by a post-round int clamp -- since the
-        // scale/offset is a monotonic increasing transform, clamping before vs.
-        // after it produces the same rounded result at every input, in-range or
-        // out-of-range (verified against the old two-clamp form via a throwaway
-        // harness sweeping both modes' full input range -- see git history).
+        // Clamping only once, after the scale/offset, is sufficient: since the
+        // scale/offset is a monotonic increasing transform, clamping at that
+        // point produces the same rounded result as clamping before it too,
+        // for every input, in-range or out-of-range.
         for (int i = 0; i < numSamples; ++i)
         {
             const float scaled = mode == Mode::bipolar ? (in[i] * 128.0f + 128.0f)

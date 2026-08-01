@@ -11,9 +11,12 @@
 #include "WaveformPeaks.h"
 
 // Runs a plugin's processBlock() pass off the message thread, so dragging the
-// plugin's own knob never blocks on it -- see PROJECT.md's live-preview
-// performance note for why this exists (the previous synchronous-on-the-
-// message-thread version made every drag tick a full blocking recompute).
+// plugin's own knob never blocks on a full recompute -- see PROJECT.md's
+// live-preview performance note. JUCE's own header comments
+// (juce_AudioProcessor.h) describe processBlock()/reset() as callbacks the
+// *audio thread* makes, explicitly distinct from the message thread, and
+// recommend AsyncUpdater-style hand-off to reach the UI from inside them,
+// which is what running them here achieves.
 //
 // A dedicated background juce::Thread with a one-slot "latest request wins"
 // mailbox: submit() always overwrites whatever hadn't started yet rather than
@@ -23,27 +26,15 @@
 // ever piles up behind it, so the worker is always at most one pass behind
 // the latest tick.
 //
-// JUCE's own header comments (juce_AudioProcessor.h) describe processBlock()/
-// reset() as callbacks the *audio thread* makes, explicitly distinct from the
-// message thread, and recommend AsyncUpdater-style hand-off to reach the UI
-// from inside them -- so running them here is more aligned with JUCE's own
-// expected usage than the old message-thread-synchronous arrangement was.
+// The render step (image composition and the waveform's float conversion)
+// also happens here, on this same worker thread, right after compute -- see
+// renderResult() in the .cpp and Result::renderedImage/waveformSamples below
+// -- so applying a result on the message thread is just a cheap hand-off of
+// already-finished data. Delivery itself is throttled to a fixed cadence
+// (deliveryRateHz below) via a private juce::Timer, independent of how fast
+// the worker can actually compute, so the message thread only ever pays
+// render cost at a rate the display can actually show.
 //
-// Decoupling the compute alone turned out to be only half the fix: applying a
-// result used to still re-render the image on the message thread (RawImage::
-// toJuceImageFromBytes()/toJuceImageFromBytesScoped() is real per-pixel work),
-// and with compute no longer gating how often a fresh result becomes
-// available, that render could end up running back-to-back with no idle time
-// -- the exact same message-thread saturation as before, just moved from
-// "compute" to "render." Two fixes address this, both still in place: (1)
-// delivery itself is throttled to a fixed cadence (deliveryRateHz below) via
-// a private juce::Timer, independent of how fast the worker can actually
-// compute, so the message thread only ever pays render cost at a rate the
-// display can actually show; (2) the render itself (image composition *and*
-// the waveform's float conversion) now happens here, on this same worker
-// thread, right after compute -- see processRequest() in the .cpp and
-// Result::renderedImage/waveformSamples below -- so applyLivePreviewResult()
-// on the message thread is just a cheap hand-off of already-finished data.
 // This is safe because RawImage's render methods used here are all `const`
 // and either allocate fresh state or -- for the one real shared mutable
 // cache, RawImage::cachedPlainImage -- are only ever read from this thread
@@ -53,12 +44,30 @@ class LivePreviewWorker : private juce::Thread,
                            private juce::Timer
 {
 public:
+    // One chain slot's DSP-relevant state, snapshotted fresh on every
+    // MainComponent::refreshLivePreview() call from the message-thread's
+    // current pluginChain -- see ChainSlot. plugin is non-owning; valid only
+    // because every call site that could destroy ANY slot's plugin (adding a
+    // new slot is fine -- existing ones are untouched -- but removing a slot,
+    // a plugin swap being replaced entirely, or app shutdown) calls
+    // waitUntilIdle()/stopThread() first. See MainComponent::
+    // addPluginToChain()/removeChainSlot()/endLivePreviewSession()/
+    // ~MainComponent().
+    struct ChainSlotRequest
+    {
+        juce::AudioPluginInstance* plugin = nullptr;
+        std::vector<ParameterAutomation> ramps;
+        bool bypassed = false;
+    };
+
     struct Request
     {
-        // Valid only because every call site that could invalidate this
-        // (plugin swap, app shutdown) calls waitUntilIdle()/stopThread()
-        // first -- see MainComponent::loadAndOpenPlugin()/~MainComponent().
-        juce::AudioPluginInstance* plugin = nullptr;
+        // DSP order (index 0 processed first). Rebuilt fresh every
+        // refreshLivePreview() call, never mutated afterward -- see
+        // MainComponent::refreshLivePreview() for how each slot's `ramps` is
+        // sourced (the selected slot's live, still-being-edited ramps vs.
+        // every other slot's last-frozen ones).
+        std::vector<ChainSlotRequest> chain;
 
         // The whole visual-order buffer, or one channel plane -- shared (not
         // copied per request) across an entire live-preview session, since
@@ -87,7 +96,6 @@ public:
         std::optional<RawImage::Channel> channel;
         juce::Range<int> selection;
         SampleFormat::Mode sampleMode = SampleFormat::Mode::bipolar;
-        std::vector<ParameterAutomation> ramps;
 
         // Fixed constants mirrored from MainComponent (see PROJECT.md: not
         // derived from anything real, chosen to match Audacity's raw-import
@@ -111,10 +119,9 @@ public:
         uint64_t epoch = 0;
 
         // Fully-composed preview image, ready for imagePreview.setImage() --
-        // rendered here (see processRequest() in the .cpp) from processedBytes
-        // via the same RawImage methods applyLivePreviewResult() used to call
-        // itself: previewWithChannelBytes()/previewWithVisualOrderedBytes() to
-        // splice processedBytes into a full render-ready buffer, then
+        // rendered here (see renderResult() in the .cpp) using RawImage's
+        // previewWithChannelBytes()/previewWithVisualOrderedBytes() to splice
+        // processedBytes into a full render-ready buffer, then
         // toJuceImageFromBytes() (no selection) or toJuceImageFromBytesScoped()
         // (selection, reusing the highlight overlay's row range) to render it.
         // processedBytes itself is kept too -- the commit path
@@ -144,8 +151,8 @@ public:
     LivePreviewWorker();
     ~LivePreviewWorker() override;
 
-    // Message-thread only, called explicitly before currentPlugin is torn
-    // down (see MainComponent::~MainComponent()) -- juce::Thread::stopThread()
+    // Message-thread only, called explicitly before any chain slot's plugin is
+    // torn down (see MainComponent::~MainComponent()) -- juce::Thread::stopThread()
     // itself is private here (juce::Thread is a private base), so this is the
     // public entry point. Lets any in-flight pass finish naturally first
     // (run()'s loop only checks threadShouldExit() between jobs) before

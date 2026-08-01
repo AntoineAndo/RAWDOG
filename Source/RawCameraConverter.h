@@ -16,9 +16,8 @@
 namespace RawCameraConverter
 {
     // Cheap magic-byte sniff (reads only the first few bytes, not the whole
-    // file -- camera raw files can be tens to hundreds of MB). Mirrors
-    // RawImage::loadFromFile()'s own content-sniff style rather than trusting
-    // the file extension:
+    // file -- camera raw files can be tens to hundreds of MB). Sniffs content
+    // instead of trusting the file extension:
     //  - RAF: literal ASCII "FUJIFILMCCD-RAW" at offset 0.
     //  - DNG: standard TIFF magic ("II*\0" little-endian or "MM\0*" big-endian)
     //    at offset 0 -- DNG is TIFF underneath, and confirming "this is
@@ -32,8 +31,7 @@ namespace RawCameraConverter
 
     // Decodes sourceFile via ImageIO and writes a fresh 24-bit uncompressed
     // BMP to destBmpFile (overwritten if it already exists). Returns true on
-    // success; on failure returns false and fills errorMessage -- mirrors
-    // RawImage::loadFromFile()'s own out-param convention.
+    // success; on failure returns false and fills errorMessage.
     bool convertToBmp(const juce::File& sourceFile, const juce::File& destBmpFile, juce::String& errorMessage);
 
     // The pixel-normalisation/BMP-writing core, factored out of convertToBmp()

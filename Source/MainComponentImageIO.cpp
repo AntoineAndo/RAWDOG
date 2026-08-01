@@ -46,8 +46,8 @@ namespace
 
         result.working = std::make_unique<RawImage>(*result.original);
 
-        // Pre-pay, off-thread, everything the old synchronous path made the
-        // message thread do at install time: warm the plain-render cache (so
+        // Pre-pay, off-thread, everything install time would otherwise have to
+        // do on the message thread: warm the plain-render cache (so
         // the completion's toJuceImage() is a cheap handle copy), and build
         // the waveform float buffer + its peak buckets (a fresh RawImage
         // always defaults to bipolar, so this matches the sample-mode reset
@@ -127,10 +127,10 @@ void MainComponent::loadImageFile(const juce::File& file)
                     return;
 
                 // Belt-and-braces on the gating argument: while
-                // imageLoadInProgress, no plugin session or header
+                // imageLoadInProgress, no chain session or header
                 // edit can open, so the install can never land into
                 // one (see updatePluginListEnablement()/menuModel).
-                jassert(self->pluginEditorPanel == nullptr && self->headerEditorPanel == nullptr);
+                jassert(self->pluginChain.empty() && self->headerEditorPanel == nullptr);
 
                 if (result->working == nullptr)
                 {
@@ -152,13 +152,11 @@ void MainComponent::loadImageFile(const juce::File& file)
                 for (auto& view : self->channelWaveformViews)
                     view.setSampleMode(SampleFormat::Mode::bipolar);
 
-                // Split mode is forced off for a new image -- the same "new
-                // image resets view state" semantic as the sample-mode reset
-                // above. (Also fixes a latent bug in the old synchronous path:
-                // with split mode left on, the channel lanes kept showing the
-                // previous image's planes.) Must precede setBuffer() below so
-                // its onViewChanged -> syncScrollBarToView() reads the plain
-                // waveform as the primary view.
+                // Split mode is forced off for a new image, same as the
+                // sample-mode reset above -- otherwise the channel lanes would
+                // keep showing the previous image's planes. Must precede
+                // setBuffer() below so its onViewChanged -> syncScrollBarToView()
+                // reads the plain waveform as the primary view.
                 self->setSplitMode(false);
 
                 // The install-time equivalents of updateWaveform(true)/
@@ -292,6 +290,12 @@ void MainComponent::updateImageSizeLabel(const RawImage& image)
     imageSizeLabel.setText(juce::String(image.getWidth()) + " x " + juce::String(image.getHeight())
                                + "  -  " + juce::String(megabytes, 1) + " MB",
                            juce::dontSendNotification);
+
+    // Same choke-point covers every path where the loaded image's identity
+    // can change (load, reset, undo/redo) -- cheap to call redundantly on
+    // ordinary in-place refreshes (Apply, selection-highlight redraw) too,
+    // since loadedImageBaseName doesn't change then.
+    effectChainPanel.setInputLabel(loadedImageBaseName.isNotEmpty() ? loadedImageBaseName : "no image");
 }
 
 void MainComponent::updateHighlightOverlay(const RawImage& image, const SelectionScope& scope)

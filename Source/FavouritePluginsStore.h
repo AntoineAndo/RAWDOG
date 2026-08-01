@@ -17,7 +17,7 @@ public:
         options.filenameSuffix = "settings";
         options.folderName = "RAWDOG";
         options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0; // write immediately
+        options.millisecondsBeforeSaving = 0;
         appProperties.setStorageParameters(options);
 
         favourites.addTokens(appProperties.getUserSettings()->getValue("favouritePlugins"), "\n", "");

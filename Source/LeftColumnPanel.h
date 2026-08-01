@@ -1,17 +1,157 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "EffectChainPanel.h"
 #include "GrippedResizerBar.h"
 #include "RawdogLookAndFeel.h"
 #include "PluginEditorPanel.h"
 
-// Parents the plugin list and (optionally) the currently-open PluginEditorPanel,
-// split by a user-draggable horizontal divider. MainComponent still owns
-// pluginEditorPanel via unique_ptr — this class only holds a non-owning pointer
-// for layout/parenting purposes, set via setEditorPanel().
+// Top-level content of the left column: an "Effect Chain"/"Plugins" tab
+// switch. "Plugins" holds the search box, All/Favourites/By Vendor filter
+// tabs, the plugin list, and -- while a session is open -- the
+// currently-selected slot's PluginEditorPanel, split from the rack by a
+// user-draggable divider.
+//
+// Opens on "Effect Chain" by default (see the SessionRail ctor) -- that's
+// what a fresh session starts on, showing just the "+ Add effect"
+// placeholder until the user switches to "Plugins" to pick one.
+//
+// MainComponent owns pluginEditorPanel via unique_ptr -- this class only
+// holds a non-owning pointer for layout/parenting purposes, set via
+// setEditorPanel().
 class LeftColumnPanel : public juce::Component
 {
 public:
+    // Not the same as PluginFilterTabs below (All/Favourites/By Vendor),
+    // which only filters the browser once you're already on the Plugins tab.
+    //
+    // Not a juce::TabbedButtonBar (which only knows how to lay tabs out
+    // horizontally) -- a narrow 26px rail with two stacked, hand-painted tab
+    // regions, each drawing its label rotated 90 degrees so "EFFECT CHAIN"/
+    // "PLUGINS" reads bottom-to-top in the vertical strip, matching the
+    // design mockup's `writing-mode: vertical-rl; transform: rotate(180deg)`.
+    // Spans the panel's full content height (not just a top strip) -- see
+    // resized() below, which carves this off the left edge before anything
+    // else.
+    class SessionRail : public juce::Component
+    {
+    public:
+        SessionRail()
+        {
+            chainTab.label = "EFFECT CHAIN";
+            chainTab.active = true;
+            chainTab.onClick = [this] { setCurrentTabIndex(0); };
+            addAndMakeVisible(chainTab);
+
+            pluginsTab.label = "PLUGINS";
+            pluginsTab.onClick = [this] { setCurrentTabIndex(1); };
+            addAndMakeVisible(pluginsTab);
+        }
+
+        int getCurrentTabIndex() const { return currentIndex; }
+
+        void setCurrentTabIndex(int index)
+        {
+            if (index == currentIndex)
+                return;
+
+            currentIndex = index;
+            chainTab.active = (index == 0);
+            pluginsTab.active = (index == 1);
+            chainTab.repaint();
+            pluginsTab.repaint();
+
+            if (onTabChanged)
+                onTabChanged(index);
+        }
+
+        std::function<void(int)> onTabChanged;
+
+        void paint(juce::Graphics& g) override
+        {
+            // The tabs are sized to their own content (see resized()), not
+            // stretched to fill the whole rail, so this fill covers the
+            // remainder below them, matching the mockup's rail background
+            // showing through past the tab boxes.
+            g.fillAll(RawdogLookAndFeel::Palette::get().windowBg);
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds();
+            chainTab.setBounds(area.removeFromTop(chainTab.getPreferredExtent()));
+            area.removeFromTop(4); // gap, matching the mockup's `gap:4px` between rail tabs
+            pluginsTab.setBounds(area.removeFromTop(pluginsTab.getPreferredExtent()));
+        }
+
+    private:
+        // One stacked region of the rail -- painted, not a juce::Button,
+        // since a button's LookAndFeel draws horizontal chrome we'd have to
+        // fight to get the rotated-text look below.
+        struct RailTab : public juce::Component
+        {
+            RailTab() { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
+
+            // The tab's extent along the rail's vertical axis -- since the
+            // label is rotated 90 degrees, that's the text's own (horizontal,
+            // pre-rotation) width plus padding, not a fixed/stretched share of
+            // the rail's height.
+            int getPreferredExtent() const
+            {
+                const auto font = RawdogLookAndFeel::chromeFont(9.0f);
+                return (int) juce::GlyphArrangement::getStringWidth(font, label) + 28;
+            }
+
+            void mouseUp(const juce::MouseEvent& e) override
+            {
+                if (contains(e.getPosition()) && onClick)
+                    onClick();
+            }
+
+            void paint(juce::Graphics& g) override
+            {
+                const auto& palette = RawdogLookAndFeel::Palette::get();
+                auto bounds = getLocalBounds().toFloat();
+
+                g.setColour(active ? palette.selectedBg : palette.windowBg);
+                g.fillRect(bounds);
+                g.setColour(palette.ink);
+                g.drawRect(bounds, 1.0f);
+
+                if (! active)
+                {
+                    // Inset highlight bevel, drawn only for the inactive state.
+                    auto inner = bounds.reduced(1.0f);
+                    g.setColour(juce::Colours::white.withAlpha(0.9f));
+                    g.drawLine(inner.getX(), inner.getY(), inner.getRight(), inner.getY(), 1.0f);
+                    g.drawLine(inner.getX(), inner.getY(), inner.getX(), inner.getBottom(), 1.0f);
+                }
+
+                // Rotate the drawing context -90 degrees about this region's
+                // own centre, then draw the label into a width/height-swapped
+                // rectangle centred on the same point -- the inverse rotation
+                // needed so the rotated text still lands exactly within
+                // `bounds` on screen, reading bottom-to-top.
+                juce::Graphics::ScopedSaveState saveState(g);
+                g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi,
+                                                                bounds.getCentreX(), bounds.getCentreY()));
+                auto rotatedBounds = juce::Rectangle<float>(0.0f, 0.0f, bounds.getHeight(), bounds.getWidth())
+                                         .withCentre(bounds.getCentre());
+
+                g.setColour(active ? palette.selectedFg : palette.ink);
+                g.setFont(RawdogLookAndFeel::chromeFont(9.0f));
+                g.drawText(label, rotatedBounds.toNearestInt(), juce::Justification::centred);
+            }
+
+            juce::String label;
+            bool active = false;
+            std::function<void()> onClick;
+        };
+
+        RailTab chainTab, pluginsTab;
+        int currentIndex = 0;
+    };
+
     // Tiny standalone TabbedButtonBar (not the heavier TabbedComponent, which
     // manages separate content pages we don't need — we're filtering one shared
     // ListBox, not swapping pages) offering "All"/"Favourites" tabs.
@@ -38,8 +178,8 @@ public:
     // Rounded search field: a magnifying-glass glyph and a clear ("x") button
     // (shown only once text is entered) drawn directly around a borderless
     // juce::TextEditor, all inside one shared rounded pill background painted
-    // here -- rather than the editor's own LookAndFeel-drawn box sitting next
-    // to a separately-boxed icon, which read as two disconnected controls.
+    // here, so the icon, text entry, and clear button read as a single
+    // control.
     class SearchField : public juce::Component
     {
     public:
@@ -109,14 +249,13 @@ public:
             g.setColour(palette.surface);
             g.fillRect(fullBounds);
             g.setColour(palette.ink);
-            // Double-weight border on focus -- same emphasis motif as
-            // RawdogLookAndFeel's "emphasized" buttons -- is this field's only
-            // focus affordance, since the wrapped editor's own outline colours
-            // are set transparent (this outer box owns the border instead).
+            // Double-weight border on focus is this field's only focus
+            // affordance, since the wrapped editor's own outline colours are
+            // set transparent (this outer box owns the border instead).
             g.drawRect(bounds, borderWeight);
 
-            // Plain "Q" glyph in place of a hand-drawn lens icon, per the
-            // Platinum mockup's search field treatment.
+            // The letter "Q" stands in as the search icon, per the Platinum
+            // mockup's search field treatment.
             g.setColour(palette.inkMuted);
             g.setFont(RawdogLookAndFeel::chromeFont(11.0f));
             g.drawText("Q", iconArea, juce::Justification::centred);
@@ -171,8 +310,13 @@ public:
         ClearButton clearButton;
     };
 
-    explicit LeftColumnPanel(juce::ListBox& listBoxIn) : listBox(listBoxIn)
+    LeftColumnPanel(juce::ListBox& listBoxIn, EffectChainPanel& effectChainPanelIn)
+        : listBox(listBoxIn), effectChainPanelRef(effectChainPanelIn)
     {
+        addAndMakeVisible(sessionRail);
+        sessionRail.onTabChanged = [this](int) { updateSessionTabVisibility(); };
+
+        addAndMakeVisible(effectChainPanelRef);
         addAndMakeVisible(listBox);
         addAndMakeVisible(resizerBar);
         addAndMakeVisible(filterTabs);
@@ -185,9 +329,11 @@ public:
         // new/different editor panel is set — see setEditorPanel() — never on
         // every resized()/layOutComponents() call, so user drag adjustments
         // survive ordinary window resizes.
-        layout.setItemLayout(0, 80, -0.7, 220);   // list: min 80px, max 70%, preferred 220px (today's value)
+        layout.setItemLayout(0, 80, -0.7, 220);   // rack: min 80px, max 70%, preferred 220px
         layout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
         layout.setItemLayout(2, 120, -1.0, -1.0);  // panel: min 120px, fills remainder
+
+        updateSessionTabVisibility();
     }
 
     void setListControlsEnabled(bool shouldBeEnabled)
@@ -199,11 +345,20 @@ public:
     std::function<void(int)> onTabChanged;
     std::function<void(const juce::String&)> onSearchChanged;
 
-    // nullptr clears the panel (list fills the whole column, matching today's
-    // no-panel behavior). A genuinely new/different panel re-seeds the panel's
-    // preferred size from its natural editor width; re-setting the same panel
-    // pointer (e.g. a redundant call) does not re-seed, so a user's drag
-    // adjustment isn't reset.
+    // Programmatic tab switches, both one-way trips triggered by a specific
+    // user action rather than a direct tab click: showPluginsTab() is wired
+    // to EffectChainPanel::onAddEffectClicked (the "+ Add effect" placeholder),
+    // showEffectChainTab() is called by MainComponent::addPluginToChain()
+    // right after a plugin is actually added, so the user lands back on the
+    // rack and immediately sees it there instead of staying on the browser.
+    void showEffectChainTab() { sessionRail.setCurrentTabIndex(0); }
+    void showPluginsTab() { sessionRail.setCurrentTabIndex(1); }
+
+    // nullptr clears the panel (the rack then fills the whole Effect Chain
+    // page). A genuinely new/different panel re-seeds the panel's preferred
+    // size from its natural editor width;
+    // re-setting the same panel pointer (e.g. a redundant call) does not
+    // re-seed, so a user's drag adjustment isn't reset.
     void setEditorPanel(juce::Component* panel)
     {
         if (panel == currentPanel)
@@ -217,7 +372,6 @@ public:
         if (currentPanel != nullptr)
         {
             addAndMakeVisible(*currentPanel);
-            resizerBar.setVisible(true);
             resizerBar.toFront(false);
 
             // Newly-opened (genuinely different) panel: re-seed just this item's
@@ -228,50 +382,85 @@ public:
             if (auto* editorPanel = dynamic_cast<PluginEditorPanel*>(currentPanel))
                 layout.setItemLayout(2, 120, -1.0, (double) editorPanel->getPreferredWidth());
         }
-        else
-        {
-            resizerBar.setVisible(false);
-        }
 
-        resized();
+        // Reconciles resizerBar/currentPanel visibility against whichever
+        // session tab is actually active, rather than forcing them visible
+        // here regardless -- setEditorPanel() can run while the Plugins tab
+        // is showing (addPluginToChain() switches back to Effect Chain right
+        // after, but hasn't yet at this point in the call).
+        updateSessionTabVisibility();
     }
 
     void resized() override
     {
         // Padding lives on the panel as a whole -- inset once here so every
-        // child (tabs, search field, list, and the editor panel when open)
-        // shares the same margin from the window frame, rather than each one
-        // carving out its own.
+        // child shares the same margin from the window frame, rather than
+        // each one carving out its own.
         constexpr int margin = 8;
         auto area = getLocalBounds().reduced(margin, margin);
 
-        auto tabsArea = area.removeFromTop(28);
-        area.removeFromTop(4);
-        filterTabs.setBounds(tabsArea);
+        // The rail spans the FULL remaining height (chain/plugins content
+        // plus, when open, the editor panel below it) -- carved off the left
+        // edge first, before anything else in this layout.
+        sessionRail.setBounds(area.removeFromLeft(26));
+        area.removeFromLeft(4);
 
-        auto searchArea = area.removeFromTop(28);
-        area.removeFromTop(4);
-        searchBox.setBounds(searchArea);
-
-        if (currentPanel == nullptr)
+        if (sessionRail.getCurrentTabIndex() == 0)
         {
-            listBox.setBounds(area);
-            return;
+            if (currentPanel == nullptr)
+            {
+                effectChainPanelRef.setBounds(area);
+                return;
+            }
+
+            juce::Component* items[] = { &effectChainPanelRef, &resizerBar, currentPanel };
+            layout.layOutComponents(items, 3, area.getX(), area.getY(),
+                                     area.getWidth(), area.getHeight(),
+                                     true /*stacked vertically*/, true /*resizeOtherDimension*/);
+
+            // Stretch the bar's tint out to the panel's true right edge, closing
+            // the notch where it would otherwise stop `margin` short of the
+            // outer vertical resizer bar it meets there.
+            resizerBar.setBounds(resizerBar.getBounds().withRight(getWidth()));
         }
+        else
+        {
+            auto tabsArea = area.removeFromTop(28);
+            area.removeFromTop(4);
+            filterTabs.setBounds(tabsArea);
 
-        juce::Component* items[] = { &listBox, &resizerBar, currentPanel };
-        layout.layOutComponents(items, 3, area.getX(), area.getY(),
-                                 area.getWidth(), area.getHeight(),
-                                 true /*stacked vertically*/, true /*resizeOtherDimension*/);
+            auto searchArea = area.removeFromTop(28);
+            area.removeFromTop(4);
+            searchBox.setBounds(searchArea);
 
-        // Stretch the bar's tint out to the panel's true right edge, closing
-        // the notch where it would otherwise stop `margin` short of the
-        // outer vertical resizer bar it meets there.
-        resizerBar.setBounds(resizerBar.getBounds().withRight(getWidth()));
+            listBox.setBounds(area);
+        }
     }
 
 private:
+    // Single place reconciling which page's children are visible against
+    // sessionRail's current selection -- called on every tab switch and from
+    // setEditorPanel(), so the two can never disagree about what should be
+    // on screen.
+    void updateSessionTabVisibility()
+    {
+        const bool showEffectChain = sessionRail.getCurrentTabIndex() == 0;
+
+        effectChainPanelRef.setVisible(showEffectChain);
+        resizerBar.setVisible(showEffectChain && currentPanel != nullptr);
+        if (currentPanel != nullptr)
+            currentPanel->setVisible(showEffectChain);
+
+        filterTabs.setVisible(! showEffectChain);
+        searchBox.setVisible(! showEffectChain);
+        listBox.setVisible(! showEffectChain);
+
+        resized();
+    }
+
     juce::ListBox& listBox;
+    EffectChainPanel& effectChainPanelRef;
+    SessionRail sessionRail;
     PluginFilterTabs filterTabs;
     SearchField searchBox;
     juce::Component* currentPanel = nullptr;

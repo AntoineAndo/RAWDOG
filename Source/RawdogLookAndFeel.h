@@ -40,9 +40,13 @@ public:
         setColour(juce::ResizableWindow::backgroundColourId, p.windowBg);
 
         setColour(juce::TextButton::buttonColourId, p.windowBg);
-        setColour(juce::TextButton::buttonOnColourId, p.windowBg);
+        // Same solid black/white "selected" convention used throughout this
+        // app (rack rows, rail tabs, etc.), distinct from the off colour so a
+        // real toggle button (splitModeToggle, currently the only one) shows
+        // a visible difference between on/off.
+        setColour(juce::TextButton::buttonOnColourId, p.selectedBg);
         setColour(juce::TextButton::textColourOffId, p.ink);
-        setColour(juce::TextButton::textColourOnId, p.ink);
+        setColour(juce::TextButton::textColourOnId, p.selectedFg);
 
         setColour(juce::TextEditor::backgroundColourId, p.surface);
         setColour(juce::TextEditor::textColourId, p.ink);
@@ -126,23 +130,20 @@ public:
         const bool active = button.getToggleState();
 
         // Every tab draws the identical full-height border box, so the seam
-        // between adjacent tabs always lines up -- trimming the whole tab
-        // (border included) for the inactive state left a mismatched-height
-        // seam wherever an active tab sat next to an inactive one. Only the
-        // *fill* shrinks for inactive tabs (a darker chip recessed from the
-        // border's top edge), which is what actually reads as "smaller,"
-        // matching the mockup's shorter top padding on FAVOURITES/BY VENDOR.
-        // Neither state draws a bottom border -- tabs read as flaps attached
-        // directly to the content below.
+        // between adjacent tabs always lines up. Only the *fill* shrinks for
+        // inactive tabs (a darker chip recessed from the border's top edge),
+        // which is what reads as "smaller," matching the mockup's shorter top
+        // padding on FAVOURITES/BY VENDOR. Neither state draws a bottom
+        // border -- tabs read as flaps attached directly to the content
+        // below.
         const auto fillArea = active ? area : area.withTrimmedTop(3.0f);
 
         g.setColour(active ? p.windowBg : p.windowBg.darker(0.08f));
         g.fillRect(fillArea);
 
         // Same 1px border weight on every edge, for every tab -- no extra
-        // bevel-highlight line under the active tab's top edge, which (by
-        // contrast with the plain border alone) was making the inactive
-        // tabs' identical top border read as visibly thinner.
+        // bevel-highlight line under the active tab's top edge, so every
+        // tab's top border reads at the same weight.
         g.setColour(p.ink);
         g.drawLine(area.getX(), area.getY(), area.getRight(), area.getY(), 1.0f);
         g.drawLine(area.getX(), area.getY(), area.getX(), area.getBottom(), 1.0f);
@@ -172,7 +173,9 @@ public:
     {
         const auto& p = Palette::get();
         const bool emphasized = button.getProperties()[emphasizedPropertyKey];
-        const float borderWeight = emphasized ? 4.0f : 2.0f;
+        // 1x/2x ratio matching the mockup's own literal CSS border weights
+        // (1px plain / 2px Apply).
+        const float borderWeight = emphasized ? 2.0f : 1.0f;
 
         auto fullBounds = button.getLocalBounds().toFloat();
         // Inset by half the border's own weight (not a fixed 0.5px) so a
@@ -189,7 +192,7 @@ public:
         g.setColour(fill);
         g.fillRect(fullBounds);
 
-        g.setColour(p.ink);
+        g.setColour(button.isEnabled() ? p.ink : p.inkMuted);
         g.drawRect(bounds, borderWeight);
 
         // Inset highlight bevel, inside the border.

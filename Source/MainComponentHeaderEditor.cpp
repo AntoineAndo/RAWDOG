@@ -9,9 +9,9 @@ void MainComponent::openHeaderEditorClicked()
         return;
     }
 
-    if (pluginEditorPanel != nullptr)
+    if (! pluginChain.empty())
     {
-        setStatus("Finish editing the plugin first (Apply or Cancel).");
+        setStatus("Finish with the effect chain first (Apply, or remove every effect).");
         return;
     }
 
@@ -31,16 +31,16 @@ void MainComponent::openHeaderEditorClicked()
     leftColumn.setEditorPanel(headerEditorPanel.get());
 
     // Re-seed the left/right split to this panel's own (much narrower than a
-    // typical plugin editor) preferred width — same "reseed only on a newly-
-    // opened panel" pattern openEditorClicked() uses for the plugin panel.
+    // typical plugin editor) preferred width; the resizer bar re-drives it
+    // from here without re-seeding on ordinary resizes.
     outerLayout.setItemLayout(0, 200, -0.5, headerEditorPanel->getPreferredWidth());
     resized();
 
     updatePluginListEnablement();
     menuModel.menuItemsChanged();
 
-    // Validate + preview the unedited starting state immediately, mirroring
-    // openEditorClicked()'s immediate refreshLivePreview() call.
+    // Validate + preview the unedited starting state immediately, so the
+    // panel opens already showing a valid preview rather than a blank one.
     RawImage::BmpEditableHeaderFields initialCandidate;
     initialCandidate.bfOffBits = initialFields.bfOffBits;
     initialCandidate.biWidth = initialFields.biWidth;
