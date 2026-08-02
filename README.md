@@ -15,7 +15,8 @@ Select a range on the waveform to modify just part of the image and leave the re
 ## 🔗 Effect chaining
 Use and tweak multiple effects at the same time
 
-<img width="500" height="280" alt="image" src="https://github.com/user-attachments/assets/8489a97d-e6fc-49c9-b68e-116b3c6db94a" />
+<img width="323" height="222" alt="image" src="https://github.com/user-attachments/assets/ec373411-4cec-4bf9-a3f6-23a3051893a9" />
+
 
 ## 🌈 Per-channel editing
 Split into R/G/B/A lanes and process each one independently
