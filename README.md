@@ -41,7 +41,22 @@ Ramp a plugin parameter across the selection instead of setting it static
 - Xcode / CMake
 - Some VST3 or AU plugins already installed
 
-## Build & run
+## How to install
+
+There's no pre-built download yet, so build it yourself and drop it into
+`/Applications`:
+
+```bash
+git clone git@github.com:AntoineAndo/PixelBender.git rawdog
+cd rawdog
+cmake -B build -G Xcode
+cmake --build build --config Release --target RAWDOG
+cp -R "build/RAWDOG_artefacts/Release/RAWDOG.app" /Applications/
+```
+
+Then launch it from Applications/Spotlight like any other app.
+
+## Build & run (development)
 
 ```bash
 cmake -B build -G Xcode
