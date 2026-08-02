@@ -5,13 +5,15 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "FavouritePluginsStore.h"
+#include "PluginEnablementStore.h"
 #include "PluginPresetsStore.h"
 
 class PluginListModel : public juce::ListBoxModel
 {
 public:
-    PluginListModel(juce::KnownPluginList& list, FavouritePluginsStore& favouritesIn, PluginPresetsStore& presetsIn)
-        : knownPluginList(list), favourites(favouritesIn), presetsStore(presetsIn) {}
+    PluginListModel(juce::KnownPluginList& list, FavouritePluginsStore& favouritesIn, PluginPresetsStore& presetsIn,
+                    PluginEnablementStore& enablementIn)
+        : knownPluginList(list), favourites(favouritesIn), presetsStore(presetsIn), enablementStore(enablementIn) {}
 
     // Every row -- vendor-group accordion header, plugin leaf, or preset leaf
     // nested under a plugin -- lives in one flat displayRows array regardless
@@ -120,6 +122,10 @@ public:
     std::function<void()> onFavouritesChanged;
     std::function<void()> onGroupExpansionChanged;
 
+    // Fired after "Hide Plugin" is chosen from a plugin row's right-click
+    // context menu -- see showPluginContextMenu().
+    std::function<void()> onPluginHidden;
+
 private:
     // Shared by both the ungrouped path and the grouped-leaf-row path in
     // paintListBoxItem (defined in PluginListModel.cpp). hasPresets/
@@ -140,6 +146,12 @@ private:
     // above, Rename opens promptAndRenamePreset below.
     void showPresetContextMenu(const juce::String& pluginIdentifier, const juce::String& presetName);
 
+    // Right-click menu on a plugin row: toggle favourite (mirrors the star
+    // column's click behaviour) or hide the plugin from this list entirely
+    // (via enablementStore -- the same flag the Settings window's plugin
+    // checklist manages, just unchecking it from here instead).
+    void showPluginContextMenu(const juce::String& pluginIdentifier);
+
     // Heap-allocated juce::AlertWindow + addTextEditor, since there's no
     // existing text-entry dialog pattern anywhere else in this codebase.
     void promptAndRenamePreset(const juce::String& pluginIdentifier, const juce::String& presetName);
@@ -157,6 +169,9 @@ private:
         for (const auto& desc : allTypes)
         {
             if (showFavouritesOnly && ! favourites.isFavourite(desc.createIdentifierString()))
+                continue;
+
+            if (! enablementStore.isEnabled(desc.createIdentifierString()))
                 continue;
 
             if (searchQuery.isNotEmpty()
@@ -252,6 +267,7 @@ private:
     juce::KnownPluginList& knownPluginList;
     FavouritePluginsStore& favourites;
     PluginPresetsStore& presetsStore;
+    PluginEnablementStore& enablementStore;
     juce::Array<juce::PluginDescription> allTypes;
     juce::Array<juce::PluginDescription> cachedTypes;
     bool enabled = false;

@@ -210,7 +210,12 @@ public:
 
             clearButton.onClick = [this]
             {
-                editor.clear();
+                // Not editor.clear() -- unlike setText(), clear() never fires
+                // textChanged()/onTextChange, so the filtered list this field
+                // drives would keep showing stale results from the last
+                // query until some other keystroke happened to trigger a real
+                // textChanged() call.
+                editor.setText({}, true);
                 editor.grabKeyboardFocus();
             };
         }

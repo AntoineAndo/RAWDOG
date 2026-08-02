@@ -15,12 +15,21 @@ MainComponent::MainComponent()
     outerLayout.setItemLayout(1, 8, 8, 8);          // resizer bar: fixed 8px
     outerLayout.setItemLayout(2, 250, -1.0, -1.0);  // right column: min 250px, fills remainder
 
-    juce::MenuBarModel::setMacMainMenu(&menuModel);
-
+    // Must run before building extraAppleMenu below: PopupMenu::addCommandItem
+    // resolves openSettingsCommand's info immediately, so commandManager needs
+    // it registered first.
     commandManager.registerAllCommandsForTarget(this);
     commandManager.setFirstCommandTarget(this);
     addKeyListener(commandManager.getKeyMappings());
     setWantsKeyboardFocus(true);
+
+    // Adds "Settings..." to the native "RAWDOG" app menu itself (the one with
+    // auto-generated About/Services/Hide/Quit), not the File/Edit menu bar —
+    // extraAppleMenu is deep-copied by setMacMainMenu() internally, so it's
+    // safe as a local that goes out of scope right after this call.
+    juce::PopupMenu extraAppleMenu;
+    extraAppleMenu.addCommandItem(&commandManager, openSettingsCommand);
+    juce::MenuBarModel::setMacMainMenu(&menuModel, &extraAppleMenu);
 
     imagePreview.onClickWithNoImage = [this] { loadImageClicked(); };
     imagePreview.onClick = [this] { clearCurrentSelection(); };
@@ -140,6 +149,7 @@ MainComponent::MainComponent()
     pluginListBox.setColour(juce::ListBox::backgroundColourId, juce::Colours::darkgrey.darker());
     listModel.onDoubleClick = [this](int row) { addPluginToChain(row); };
     listModel.onFavouritesChanged = [this] { pluginListBox.updateContent(); pluginListBox.repaint(); };
+    listModel.onPluginHidden = [this] { pluginListBox.updateContent(); pluginListBox.repaint(); };
 
     // The model has no reference back to pluginListBox (it deliberately doesn't
     // own UI components, same as every other filter/mutation callback here), so
@@ -253,8 +263,20 @@ void MainComponent::refreshPluginList()
     // see PROJECT.md) so a second click can't race the background scan.
     menuModel.menuItemsChanged();
 
-    scanner.scanAll([this]
+    scanner.scanAll(pluginDirectoriesStore.getAsSearchPath(), [this]
     {
+        // Seed a default-disabled state the first time a duplicate AU is
+        // ever seen, without clobbering a user's later manual re-enable —
+        // see PluginEnablementStore::hasDefaultBeenAssigned()'s doc comment.
+        for (const auto& id : scanner.getLastDuplicateAudioUnitIdentifiers())
+        {
+            if (! pluginEnablementStore.hasDefaultBeenAssigned(id))
+            {
+                pluginEnablementStore.setEnabled(id, false);
+                pluginEnablementStore.markDefaultAssigned(id);
+            }
+        }
+
         listModel.refresh();
         pluginListBox.updateContent();
         pluginListBox.repaint();
@@ -274,6 +296,20 @@ void MainComponent::refreshPluginList()
         setStatus(status);
         menuModel.menuItemsChanged();
     });
+}
+
+void MainComponent::openSettingsClicked()
+{
+    if (settingsWindow == nullptr)
+    {
+        settingsWindow = std::make_unique<SettingsWindow>(
+            pluginDirectoriesStore, pluginEnablementStore, scanner,
+            [this] { refreshPluginList(); },
+            [this] { listModel.refresh(); pluginListBox.updateContent(); pluginListBox.repaint(); });
+    }
+
+    settingsWindow->setVisible(true);
+    settingsWindow->toFront(true);
 }
 
 void MainComponent::resetClicked()
@@ -438,6 +474,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
     commands.add(loadImageCommand);
     commands.add(resetCommand);
     commands.add(exportImageCommand);
+    commands.add(openSettingsCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -514,6 +551,18 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
                               && headerEditorPanel == nullptr && ! imageLoadInProgress);
             break;
 
+        case openSettingsCommand:
+            // Deliberately always active: this backs an item in the native
+            // "RAWDOG" app menu's extraAppleMenu (see the constructor), which
+            // JUCE only rebuilds on a fresh setMacMainMenu() call, never on
+            // menuModel.menuItemsChanged() — so a conditionally-active state
+            // here would go stale. Settings doesn't touch pluginChain/
+            // workingImage, so there's no real reason to disable it anyway.
+            result.setInfo("Settings...", "Open plugin management settings", "General", 0);
+            result.addDefaultKeypress(',', juce::ModifierKeys::commandModifier);
+            result.setActive(true);
+            break;
+
         default:
             break;
     }
@@ -543,6 +592,10 @@ bool MainComponent::perform(const InvocationInfo& info)
 
         case exportImageCommand:
             exportImageClicked();
+            return true;
+
+        case openSettingsCommand:
+            openSettingsClicked();
             return true;
 
         default: return false;

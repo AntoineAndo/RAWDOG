@@ -37,10 +37,12 @@ class PluginScanner::ScanThread : public juce::ThreadWithProgressWindow
 public:
     ScanThread(juce::AudioPluginFormatManager& formatManagerIn,
                juce::KnownPluginList& knownPluginListIn,
+               juce::FileSearchPath directoriesToSearchIn,
                std::function<void()> onCompleteIn)
         : ThreadWithProgressWindow("Scanning for plugins...", true, true),
           formatManager(formatManagerIn),
           knownPluginList(knownPluginListIn),
+          directoriesToSearch(std::move(directoriesToSearchIn)),
           onComplete(std::move(onCompleteIn))
     {
     }
@@ -67,7 +69,7 @@ public:
 
             juce::PluginDirectoryScanner scanner(knownPluginList,
                                                   format,
-                                                  format.getDefaultLocationsToSearch(),
+                                                  directoriesToSearch,
                                                   true, // recursive
                                                   getDeadMansPedalFile(),
                                                   true); // allowAsync
@@ -81,7 +83,7 @@ public:
             }
         }
 
-        removeDuplicateAudioUnits();
+        computeDuplicateAudioUnits();
 
         for (const auto& file : knownPluginList.getBlacklistedFiles())
             if (! blacklistedBefore.contains(file))
@@ -89,6 +91,7 @@ public:
     }
 
     const juce::StringArray& getSkippedCrashers() const { return skippedCrashers; }
+    const juce::StringArray& getDuplicateAudioUnitIdentifiers() const { return duplicateAuIdentifiers; }
 
     void threadComplete(bool /*userPressedCancel*/) override
     {
@@ -98,12 +101,14 @@ public:
 
 private:
     // Some plugins ship as both a VST3 and an AU; hosting both formats means
-    // the exact same plugin (same name+vendor) shows up twice in the plugin
-    // list for no benefit, since either format works equally well here. Keep
-    // VST3 as the preferred copy and drop only the AU side of an actual
-    // duplicate — a plugin that exists in just one format (VST3-only or
+    // the exact same plugin (same name+vendor) shows up twice for no benefit,
+    // since either format works equally well here. Both entries stay in
+    // knownPluginList (the Settings plugin list needs to show both), but the
+    // AU side of an actual duplicate is recorded here so the caller can
+    // default it to disabled the first time it's seen — VST3 is the
+    // preferred copy. A plugin that exists in just one format (VST3-only or
     // AU-only) is untouched either way.
-    void removeDuplicateAudioUnits()
+    void computeDuplicateAudioUnits()
     {
         juce::StringArray vst3Keys;
 
@@ -113,22 +118,37 @@ private:
 
         for (const auto& type : knownPluginList.getTypes())
             if (type.pluginFormatName == "AudioUnit" && vst3Keys.contains(type.name + "|" + type.manufacturerName))
-                knownPluginList.removeType(type);
+                duplicateAuIdentifiers.add(type.createIdentifierString());
     }
 
     juce::AudioPluginFormatManager& formatManager;
     juce::KnownPluginList& knownPluginList;
+    juce::FileSearchPath directoriesToSearch;
     std::function<void()> onComplete;
     juce::StringArray skippedCrashers;
+    juce::StringArray duplicateAuIdentifiers;
 };
 
 PluginScanner::PluginScanner()
 {
     // Both VST3 and AU are scanned — some plugins ship only as one or the
-    // other. When a plugin ships as both, ScanThread::removeDuplicateAudioUnits()
-    // drops the AU copy after scanning, keeping VST3 as the preferred format
-    // rather than showing the same plugin twice.
+    // other. When a plugin ships as both, ScanThread::computeDuplicateAudioUnits()
+    // reports the AU copy as a duplicate so the caller can default it to
+    // disabled, keeping VST3 as the preferred format shown by default rather
+    // than showing the same plugin twice.
     juce::addDefaultFormatsToManager(formatManager);
+}
+
+juce::FileSearchPath PluginScanner::getUnionOfDefaultLocations()
+{
+    juce::AudioPluginFormatManager tempManager;
+    juce::addDefaultFormatsToManager(tempManager);
+
+    juce::FileSearchPath merged;
+    for (auto* format : tempManager.getFormats())
+        merged.addPath(format->getDefaultLocationsToSearch());
+
+    return merged;
 }
 
 PluginScanner::~PluginScanner() = default;
@@ -172,7 +192,7 @@ void PluginScanner::saveCachedPluginListToDisk() const
         xml->writeTo(file);
 }
 
-void PluginScanner::scanAll(std::function<void()> onComplete)
+void PluginScanner::scanAll(const juce::FileSearchPath& directoriesToSearch, std::function<void()> onComplete)
 {
     // Guard against re-entrancy: callers (MainComponent disables "Rescan
     // Plugins" while isScanning()) shouldn't normally hit this, but bail out
@@ -182,10 +202,11 @@ void PluginScanner::scanAll(std::function<void()> onComplete)
     if (isScanning())
         return;
 
-    scanThread = std::make_unique<ScanThread>(formatManager, knownPluginList,
+    scanThread = std::make_unique<ScanThread>(formatManager, knownPluginList, directoriesToSearch,
         [this, userOnComplete = std::move(onComplete)]
         {
             lastSkippedCrashers = scanThread->getSkippedCrashers();
+            lastDuplicateAuIdentifiers = scanThread->getDuplicateAudioUnitIdentifiers();
 
             if (userOnComplete != nullptr)
                 userOnComplete();

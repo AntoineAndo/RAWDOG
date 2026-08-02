@@ -25,8 +25,10 @@ target_sources(RAWDOG PRIVATE
     Source/PluginPresetsStore.cpp
     Source/PluginScanner.cpp
     Source/PluginHost.cpp
+    Source/PluginsSettingsTab.cpp
     Source/RawCameraConverter.cpp
     Source/RawImage.cpp
+    Source/SettingsWindow.cpp
     Source/WaveformView.cpp
     Source/ZoomableImageView.cpp
 )

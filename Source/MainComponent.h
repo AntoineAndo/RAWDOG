@@ -14,13 +14,16 @@
 #include "LivePreviewWorker.h"
 #include "MainMenuModel.h"
 #include "ParameterAutomation.h"
+#include "PluginDirectoriesStore.h"
 #include "PluginEditorPanel.h"
+#include "PluginEnablementStore.h"
 #include "PluginListModel.h"
 #include "PluginParameterWatcher.h"
 #include "PluginPresetsStore.h"
 #include "PluginScanner.h"
 #include "RawImage.h"
 #include "RightColumnPanel.h"
+#include "SettingsWindow.h"
 #include "WaveformSectionPanel.h"
 #include "WaveformView.h"
 #include "ZoomableImageView.h"
@@ -65,11 +68,16 @@ private:
                           // so the shortcut appears next to the menu item too.
         resetCommand, // Cmd+Shift+R — same command-item treatment as
                       // loadImageCommand above, via populateFileMenuResetItem.
-        exportImageCommand // Cmd+S — same command-item treatment again, via
+        exportImageCommand, // Cmd+S — same command-item treatment again, via
                            // populateFileMenuExportItem.
+        openSettingsCommand // Cmd+, — backs the "Settings..." item added to
+                            // the native "RAWDOG" app menu itself (see the
+                            // extraAppleMenu built around setMacMainMenu() in
+                            // the constructor), not the File/Edit menu bar.
     };
 
     void refreshPluginList();
+    void openSettingsClicked();
     void loadImageClicked();
 
     // Shared tail of loadImageClicked()'s file-chooser callback and
@@ -300,7 +308,9 @@ private:
 
     FavouritePluginsStore favouritePluginsStore;
     PluginPresetsStore pluginPresetsStore;
-    PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore };
+    PluginDirectoriesStore pluginDirectoriesStore;
+    PluginEnablementStore pluginEnablementStore;
+    PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore, pluginEnablementStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
         [this] { return scanner.isScanning(); },
@@ -381,6 +391,10 @@ private:
     // workingImage itself is only touched by applyHeaderEditClicked().
     std::unique_ptr<RawImage> headerEditScratch;
     std::unique_ptr<HeaderEditorPanel> headerEditorPanel;
+
+    // Lazily created on the first "Settings..." click and reused after —
+    // openSettingsClicked() just re-shows/refronts it rather than recreating.
+    std::unique_ptr<SettingsWindow> settingsWindow;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

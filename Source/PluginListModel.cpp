@@ -180,6 +180,15 @@ void PluginListModel::listBoxItemClicked(int row, const juce::MouseEvent& e)
     {
         const auto& desc = cachedTypes.getReference(displayRow.pluginIndex);
         const auto identifier = desc.createIdentifierString();
+
+        // Not confined to one small glyph, same convention the preset row's
+        // own right-click handling below already uses.
+        if (e.mods.isPopupMenu())
+        {
+            showPluginContextMenu(identifier);
+            return;
+        }
+
         const bool hasPresets = ! presetsStore.getPresetNames(identifier).isEmpty();
 
         if (hasPresets && e.x >= leftIndent && e.x < leftIndent + disclosureColumnWidth)
@@ -230,6 +239,41 @@ void PluginListModel::listBoxItemClicked(int row, const juce::MouseEvent& e)
     const int rowWidth = e.eventComponent != nullptr ? e.eventComponent->getWidth() : 0;
     if (rowWidth > 0 && e.x >= rowWidth - presetMenuColumnWidth)
         showPresetContextMenu(identifier, presetNames[displayRow.presetIndex]);
+}
+
+void PluginListModel::showPluginContextMenu(const juce::String& pluginIdentifier)
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, favourites.isFavourite(pluginIdentifier) ? "Remove from Favourites" : "Add to Favourites");
+    menu.addItem(2, "Hide Plugin");
+
+    menu.showMenuAsync(juce::PopupMenu::Options(),
+        [this, pluginIdentifier](int result)
+        {
+            if (result == 1)
+            {
+                favourites.setFavourite(pluginIdentifier, ! favourites.isFavourite(pluginIdentifier));
+                applyFilter();
+
+                if (onFavouritesChanged)
+                    onFavouritesChanged();
+            }
+            else if (result == 2)
+            {
+                enablementStore.setEnabled(pluginIdentifier, false);
+
+                // An explicit user toggle always counts as "a default has
+                // been assigned", same rule PluginsSettingsTab's own checkbox
+                // toggle follows -- so a later rescan's duplicate-seeding
+                // logic never re-decides this plugin's enablement.
+                enablementStore.markDefaultAssigned(pluginIdentifier);
+
+                applyFilter();
+
+                if (onPluginHidden)
+                    onPluginHidden();
+            }
+        });
 }
 
 void PluginListModel::showPresetContextMenu(const juce::String& pluginIdentifier, const juce::String& presetName)
