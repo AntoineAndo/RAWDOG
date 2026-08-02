@@ -108,6 +108,13 @@ private:
 
     void fitToView();
     void applyZoom(float factor, juce::Point<float> anchorScreenPos);
+
+    // Keeps at least a small margin of the image within the viewport on every
+    // side -- called after anything that moves offset (trackpad pan, zoom, a
+    // resize) so panning/zooming can never lose the image entirely off-screen
+    // with no visible edge left to drag back from.
+    void clampOffset();
+
     juce::AffineTransform getImageToScreenTransform() const;
 
     // Screen-space bounds of the current highlightRegion, or an empty

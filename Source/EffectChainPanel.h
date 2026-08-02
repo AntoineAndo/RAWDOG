@@ -113,7 +113,11 @@ public:
     void paint(juce::Graphics& g) override
     {
         const auto& palette = RawdogLookAndFeel::Palette::get();
-        g.fillAll(palette.surface);
+
+        // Same halftone "workspace mat" the image canvas uses, but white
+        // (surface) rather than the canvas's Platinum grey -- the rack sits
+        // on a white sunken field, not a grey letterboxed one.
+        RawdogLookAndFeel::drawDotMat(g, getLocalBounds(), palette.surface);
 
         g.setColour(palette.ink);
         g.drawLine(0.0f, (float) headerHeight, (float) getWidth(), (float) headerHeight, 1.0f);
@@ -290,16 +294,19 @@ private:
             const auto& palette = RawdogLookAndFeel::Palette::get();
             const bool enabled = isEnabled();
 
-            g.setColour(! enabled ? palette.windowBg : (selected ? palette.selectedBg : palette.surface));
+            g.setColour(palette.divider);
             g.fillRect(getLocalBounds());
 
-            g.setColour(! enabled ? palette.inkMuted : (selected ? palette.selectedFg : palette.ink));
-            g.drawRect(getLocalBounds(), (enabled && selected) ? 2 : 1);
+            g.setColour(! enabled ? palette.windowBg : (selected ? palette.selectedBg : palette.surface));
+            g.fillRect(boxBounds());
+
+            g.setColour(enabled ? palette.ink : palette.inkMuted);
+            g.drawRect(boxBounds(), (enabled && selected) ? 2 : 1);
         }
 
         void resized() override
         {
-            auto area = getLocalBounds().reduced(8, 5);
+            auto area = boxBounds().reduced(8, 5);
 
             indexLabel.setBounds(area.removeFromLeft(16));
             area.removeFromLeft(4);
@@ -314,6 +321,15 @@ private:
         }
 
         static constexpr int rowHeight = 30;
+
+    private:
+        // The row's own bounds trimmed by shadowOffset on the right/bottom --
+        // shared by paint() (the actual box fill/border, with the untrimmed
+        // full bounds behind it reading as the shadow strip) and resized()
+        // (so child controls stay inset within the visible box rather than
+        // overlapping the shadow).
+        static constexpr int shadowOffset = 2;
+        juce::Rectangle<int> boxBounds() const { return getLocalBounds().withTrimmedRight(shadowOffset).withTrimmedBottom(shadowOffset); }
 
         int index;
         bool selected;
@@ -509,7 +525,11 @@ private:
 
         void paint(juce::Graphics& g) override
         {
-            g.fillAll(RawdogLookAndFeel::Palette::get().surface);
+            // Same white dot-mat texture as the outer EffectChainPanel::paint()
+            // -- this Content is what actually sits behind the rows/connectors
+            // inside the scrolling viewport, so the outer panel's own paint()
+            // never shows through here.
+            RawdogLookAndFeel::drawDotMat(g, getLocalBounds(), RawdogLookAndFeel::Palette::get().surface);
 
             if (draggingIndex < 0)
                 return;

@@ -92,11 +92,14 @@ public:
     // (letterboxing and the no-image placeholder) instead of a flat grey
     // fill, matching the mockup's dithered/dotted backdrop. Cheap enough to
     // call from a cached-image rebuild or an idle placeholder repaint; not
-    // meant for a per-frame hot path.
-    static void drawDotMat(juce::Graphics& g, juce::Rectangle<int> area)
+    // meant for a per-frame hot path. backgroundColour defaults to the same
+    // Platinum grey the image canvas uses; other callers (e.g. EffectChainPanel)
+    // pass Palette::get().surface for a white mat with the same grey dots.
+    static void drawDotMat(juce::Graphics& g, juce::Rectangle<int> area,
+                           juce::Colour backgroundColour = Palette::get().windowBg)
     {
         const auto& p = Palette::get();
-        g.setColour(p.windowBg);
+        g.setColour(backgroundColour);
         g.fillRect(area);
 
         g.setColour(p.divider.withAlpha(0.6f));

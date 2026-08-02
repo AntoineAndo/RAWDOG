@@ -60,6 +60,11 @@ void ZoomableImageView::resized()
     // Keep the view sane if the component gets resized before any zoom/pan happened.
     if (scale <= 0.0f)
         fitToView();
+
+    // A resize can leave a previously-fine pan position with the image now
+    // entirely outside the (possibly shrunk) viewport.
+    clampOffset();
+    invalidateCachedRender();
 }
 
 juce::Rectangle<int> ZoomableImageView::getCardBounds() const
@@ -311,6 +316,7 @@ void ZoomableImageView::mouseWheelMove(const juce::MouseEvent&, const juce::Mous
     // normalised to roughly [-1, 1] per tick; scale up to pixels for a natural pan speed.
     constexpr float panPixelsPerUnitDelta = 1000.0f;
     offset += juce::Point<float>(wheel.deltaX, wheel.deltaY) * panPixelsPerUnitDelta;
+    clampOffset();
     invalidateCachedRender();
     repaint();
 }
@@ -506,7 +512,40 @@ void ZoomableImageView::applyZoom(float factor, juce::Point<float> anchorScreenP
 
     scale = newScale;
     offset = anchorScreenPos - imagePointUnderCursor * scale;
+    clampOffset();
 
     invalidateCachedRender();
     repaint();
+}
+
+void ZoomableImageView::clampOffset()
+{
+    if (! image.isValid() || getWidth() == 0 || getHeight() == 0)
+        return;
+
+    const float imageW = (float) image.getWidth() * scale;
+    const float imageH = (float) image.getHeight() * scale;
+    const float viewW = (float) getWidth();
+    const float viewH = (float) getHeight();
+
+    // However far the image is panned/zoomed, at least this many pixels of it
+    // must stay inside the viewport on every side -- enough to still see (and
+    // grab) an edge to pan back from, without being so large it feels like
+    // the image is stuck.
+    constexpr float minVisible = 60.0f;
+
+    // offset.x is the image's left edge in screen space; offset.x + imageW is
+    // its right edge. Bounding the left edge to <= viewW - minVisible keeps it
+    // from sliding past the right edge of the viewport; bounding it to
+    // >= minVisible - imageW keeps the right edge from sliding past the left.
+    // jmin/jmax (rather than assuming low <= high) guards the case where the
+    // image is small enough relative to the viewport that these two
+    // constraints would otherwise cross.
+    const float minOffsetX = minVisible - imageW;
+    const float maxOffsetX = viewW - minVisible;
+    offset.x = juce::jlimit(juce::jmin(minOffsetX, maxOffsetX), juce::jmax(minOffsetX, maxOffsetX), offset.x);
+
+    const float minOffsetY = minVisible - imageH;
+    const float maxOffsetY = viewH - minVisible;
+    offset.y = juce::jlimit(juce::jmin(minOffsetY, maxOffsetY), juce::jmax(minOffsetY, maxOffsetY), offset.y);
 }
