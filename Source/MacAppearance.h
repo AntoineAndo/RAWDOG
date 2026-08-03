@@ -1,9 +1,8 @@
 #pragma once
 
-// macOS-only: forces the app's overall appearance to Aqua (light), so the
-// OS-drawn native title bar renders in its standard light grey rather than
-// following the system's dark mode (which paints it near-black) -- the
-// Platinum theme is a fixed light chrome, not a light/dark pair, so the
-// native title bar should always match it rather than tracking the user's
-// system-wide appearance setting.
-void forceLightAppearance();
+// macOS-only: pins the app's overall appearance to Aqua or Dark Aqua
+// regardless of the system-wide setting, so the OS-drawn native title bar
+// always matches RawdogLookAndFeel's own active palette (see
+// RawdogLookAndFeel::Palette::isDarkModeEnabled()) instead of independently
+// following the system's dark mode.
+void setNativeAppearanceDark(bool useDarkAppearance);

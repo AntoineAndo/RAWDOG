@@ -3,14 +3,18 @@
 
 SettingsWindow::Content::Content(PluginDirectoriesStore& directoriesStore,
                                   PluginEnablementStore& enablementStore,
+                                  AppearanceSettingsStore& appearanceStore,
                                   PluginScanner& scanner,
                                   std::function<void()> onRescanRequested,
                                   std::function<void()> onEnablementChanged,
+                                  std::function<void()> onAppearanceChanged,
                                   std::function<void()> onOkClicked)
-    : pluginsTab(directoriesStore, enablementStore, scanner, std::move(onRescanRequested), std::move(onEnablementChanged))
+    : pluginsTab(directoriesStore, enablementStore, scanner, std::move(onRescanRequested), std::move(onEnablementChanged)),
+      appearanceTab(appearanceStore, std::move(onAppearanceChanged))
 {
     addAndMakeVisible(tabs);
     tabs.addTab("Plugins", RawdogLookAndFeel::Palette::get().windowBg, &pluginsTab, false);
+    tabs.addTab("Appearance", RawdogLookAndFeel::Palette::get().windowBg, &appearanceTab, false);
 
     RawdogLookAndFeel::setEmphasized(okButton);
     okButton.onClick = std::move(onOkClicked);
@@ -27,15 +31,24 @@ void SettingsWindow::Content::resized()
     tabs.setBounds(area);
 }
 
+void SettingsWindow::Content::lookAndFeelChanged()
+{
+    tabs.setTabBackgroundColour(0, RawdogLookAndFeel::Palette::get().windowBg);
+    tabs.setTabBackgroundColour(1, RawdogLookAndFeel::Palette::get().windowBg);
+}
+
 SettingsWindow::SettingsWindow(PluginDirectoriesStore& directoriesStore,
                                 PluginEnablementStore& enablementStore,
+                                AppearanceSettingsStore& appearanceStore,
                                 PluginScanner& scanner,
                                 std::function<void()> onRescanRequested,
-                                std::function<void()> onEnablementChanged)
+                                std::function<void()> onEnablementChanged,
+                                std::function<void()> onAppearanceChanged)
     : DocumentWindow("Settings",
                       RawdogLookAndFeel::Palette::get().windowBg,
                       DocumentWindow::closeButton),
-      content(directoriesStore, enablementStore, scanner, std::move(onRescanRequested), std::move(onEnablementChanged),
+      content(directoriesStore, enablementStore, appearanceStore, scanner,
+              std::move(onRescanRequested), std::move(onEnablementChanged), std::move(onAppearanceChanged),
               [this] { setVisible(false); })
 {
     setUsingNativeTitleBar(true);
@@ -47,4 +60,9 @@ SettingsWindow::SettingsWindow(PluginDirectoriesStore& directoriesStore,
     setContentNonOwned(&content, true);
 
     centreWithSize(520, 480);
+}
+
+void SettingsWindow::lookAndFeelChanged()
+{
+    setBackgroundColour(RawdogLookAndFeel::Palette::get().windowBg);
 }

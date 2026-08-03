@@ -1,6 +1,10 @@
 #include "MainComponent.h"
 #include "PluginHost.h"
+#include "RawdogLookAndFeel.h"
 #include "SampleFormat.h"
+#if JUCE_MAC
+ #include "MacAppearance.h"
+#endif
 
 MainComponent::MainComponent()
 {
@@ -303,9 +307,16 @@ void MainComponent::openSettingsClicked()
     if (settingsWindow == nullptr)
     {
         settingsWindow = std::make_unique<SettingsWindow>(
-            pluginDirectoriesStore, pluginEnablementStore, scanner,
+            pluginDirectoriesStore, pluginEnablementStore, appearanceSettingsStore, scanner,
             [this] { refreshPluginList(); },
-            [this] { listModel.refresh(); pluginListBox.updateContent(); pluginListBox.repaint(); });
+            [this] { listModel.refresh(); pluginListBox.updateContent(); pluginListBox.repaint(); },
+            []
+            {
+                RawdogLookAndFeel::refreshAllWindows();
+#if JUCE_MAC
+                setNativeAppearanceDark(RawdogLookAndFeel::Palette::isDarkModeEnabled());
+#endif
+            });
     }
 
     settingsWindow->setVisible(true);

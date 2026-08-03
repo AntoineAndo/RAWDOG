@@ -181,7 +181,7 @@ PluginsSettingsTab::PluginsSettingsTab(PluginDirectoriesStore& directoriesStoreI
     pluginsLabel.setFont(RawdogLookAndFeel::chromeFont(11.0f));
     addAndMakeVisible(pluginsLabel);
 
-    pluginSearchField.setTextToShowWhenEmpty("Search plugins...", RawdogLookAndFeel::Palette::get().inkMuted);
+    pluginSearchField.setTextToShowWhenEmpty("Search plugins...");
     pluginSearchField.onTextChange = [this](const juce::String& query)
     {
         pluginChecklistModel->setSearchQuery(query);

@@ -1,4 +1,5 @@
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "AppearanceSettingsStore.h"
 #include "MainComponent.h"
 #include "RawdogLookAndFeel.h"
 #if JUCE_MAC
@@ -13,11 +14,21 @@ public:
 
     void initialise(const juce::String&) override
     {
+        // Restores whichever theme the user last chose in Settings >
+        // Appearance -- read once here since the LookAndFeel colours below
+        // are set from Palette::get() at construction/applyPalette() time,
+        // not looked up fresh at startup otherwise.
+        AppearanceSettingsStore appearanceSettingsStore;
+        const bool darkModeEnabled = appearanceSettingsStore.isDarkModeEnabled();
+        RawdogLookAndFeel::Palette::setDarkModeEnabled(darkModeEnabled);
+        lookAndFeel.applyPalette();
+
 #if JUCE_MAC
-        // The Platinum chrome is a fixed light theme, not a light/dark pair --
-        // without this, the native title bar follows system dark mode and
-        // renders near-black, clashing with the app's own grey chrome below it.
-        forceLightAppearance();
+        // The Platinum chrome is a fixed light/dark pair, not a theme that
+        // tracks the system's own appearance setting -- without this, the
+        // OS-drawn native title bar would follow system dark mode
+        // independently of whichever RAWDOG theme is actually active.
+        setNativeAppearanceDark(darkModeEnabled);
 #endif
         juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel);
         mainWindow.reset(new MainWindow(getApplicationName()));
@@ -99,6 +110,17 @@ public:
         void closeButtonPressed() override
         {
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+
+        // The constructor's backgroundColour argument above is cached as an
+        // explicit colour rather than tracked live -- reapply it from the
+        // LookAndFeel whenever RawdogLookAndFeel::refreshAllWindows() fires a
+        // theme switch, or this window would keep the old theme's colour
+        // behind MainComponent's own panels.
+        void lookAndFeelChanged() override
+        {
+            setBackgroundColour(juce::Desktop::getInstance().getDefaultLookAndFeel()
+                                     .findColour(juce::ResizableWindow::backgroundColourId));
         }
 
         // Non-owning -- setContentOwned() above (ownComponent=true) is what

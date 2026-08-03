@@ -1,7 +1,8 @@
 #include "MacAppearance.h"
 #include <AppKit/AppKit.h>
 
-void forceLightAppearance()
+void setNativeAppearanceDark(bool useDarkAppearance)
 {
-    NSApplication.sharedApplication.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    NSApplication.sharedApplication.appearance =
+        [NSAppearance appearanceNamed:useDarkAppearance ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
 }

@@ -113,16 +113,25 @@ public:
                 const auto& palette = RawdogLookAndFeel::Palette::get();
                 auto bounds = getLocalBounds().toFloat();
 
-                g.setColour(active ? palette.selectedBg : palette.windowBg);
+                // Active state reads as a page switch (like the Settings
+                // window's own tabs), not a list-row selection -- using
+                // selectedBg/selectedFg here would light up as a jarring
+                // near-white box in dark mode, since selectedBg is
+                // deliberately inverted-light there for list selections.
+                g.setColour(active ? palette.divider : palette.windowBg);
                 g.fillRect(bounds);
                 g.setColour(palette.ink);
                 g.drawRect(bounds, 1.0f);
 
                 if (! active)
                 {
-                    // Inset highlight bevel, drawn only for the inactive state.
+                    // Inset highlight bevel, drawn only for the inactive
+                    // state -- brightened relative to windowBg rather than a
+                    // hardcoded white, so it still reads as a highlight (not
+                    // a bright streak) against the dark palette's much
+                    // darker fill.
                     auto inner = bounds.reduced(1.0f);
-                    g.setColour(juce::Colours::white.withAlpha(0.9f));
+                    g.setColour(palette.windowBg.brighter(0.6f).withAlpha(0.9f));
                     g.drawLine(inner.getX(), inner.getY(), inner.getRight(), inner.getY(), 1.0f);
                     g.drawLine(inner.getX(), inner.getY(), inner.getX(), inner.getBottom(), 1.0f);
                 }
@@ -138,7 +147,10 @@ public:
                 auto rotatedBounds = juce::Rectangle<float>(0.0f, 0.0f, bounds.getHeight(), bounds.getWidth())
                                          .withCentre(bounds.getCentre());
 
-                g.setColour(active ? palette.selectedFg : palette.ink);
+                // ink reads correctly against both the active (divider) and
+                // inactive (windowBg) fills above, in either theme -- unlike
+                // selectedFg, which only pairs correctly with selectedBg.
+                g.setColour(palette.ink);
                 g.setFont(RawdogLookAndFeel::chromeFont(9.0f));
                 g.drawText(label, rotatedBounds.toNearestInt(), juce::Justification::centred);
             }
@@ -192,7 +204,7 @@ public:
             editor.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
             editor.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
             editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
-            editor.setTextToShowWhenEmpty("Search plugins...", RawdogLookAndFeel::Palette::get().inkMuted);
+            setTextToShowWhenEmpty("Search plugins...");
             editor.onFocusChanged = [this] { repaint(); };
 
             editor.onTextChange = [this]
@@ -220,9 +232,19 @@ public:
             };
         }
 
-        void setTextToShowWhenEmpty(const juce::String& text, juce::Colour colour)
+        // Always styled in the palette's inkMuted colour -- stores text so
+        // lookAndFeelChanged() below can reapply it in whichever colour the
+        // active palette now uses.
+        void setTextToShowWhenEmpty(const juce::String& text)
         {
-            editor.setTextToShowWhenEmpty(text, colour);
+            placeholderText = text;
+            editor.setTextToShowWhenEmpty(placeholderText, RawdogLookAndFeel::Palette::get().inkMuted);
+        }
+
+        void lookAndFeelChanged() override
+        {
+            if (placeholderText.isNotEmpty())
+                editor.setTextToShowWhenEmpty(placeholderText, RawdogLookAndFeel::Palette::get().inkMuted);
         }
 
         juce::String getText() const { return editor.getText(); }
@@ -313,6 +335,7 @@ public:
         juce::Rectangle<int> iconArea;
         FocusNotifyingEditor editor;
         ClearButton clearButton;
+        juce::String placeholderText;
     };
 
     LeftColumnPanel(juce::ListBox& listBoxIn, EffectChainPanel& effectChainPanelIn)

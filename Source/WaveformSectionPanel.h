@@ -41,6 +41,14 @@ public:
         updateSplitVisibility();
     }
 
+    // modeLabel's textColourId (set once in the constructor above) is cached
+    // on the Label rather than looked up from the LookAndFeel per paint, so a
+    // theme switch needs this reapplied explicitly.
+    void lookAndFeelChanged() override
+    {
+        modeLabel.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
+    }
+
     // Called by MainComponent (via RightColumnPanel's forwarding method)
     // whenever splitModeToggle's state may have changed — reads the toggle's
     // current state and swaps which of waveformViewRef/splitPanel is shown.

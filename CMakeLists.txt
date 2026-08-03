@@ -14,6 +14,7 @@ juce_add_gui_app(RAWDOG
 )
 
 target_sources(RAWDOG PRIVATE
+    Source/AppearanceSettingsTab.cpp
     Source/Main.cpp
     Source/LivePreviewWorker.cpp
     Source/MainComponent.cpp

@@ -10,7 +10,9 @@
 // in Main.cpp; other paint() overrides in the codebase (PluginListModel,
 // WaveformView, WaveformSectionPanel, ZoomableImageView) reference
 // Palette::get() directly so hand-drawn components stay in sync with this
-// same palette.
+// same palette. Palette::get() returns whichever of the light/dark variants
+// is currently active (see setDarkModeEnabled()), so those direct callers
+// pick up a theme switch automatically the next time they repaint.
 class RawdogLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
@@ -24,16 +26,61 @@ public:
         juce::Colour selectedBg { 0xff000000 }; // selected list row fill
         juce::Colour selectedFg { 0xffffffff }; // selected list row text
 
-        static const Palette& get()
+        // Inverted tones of the same flat, hard-bordered chrome -- not a
+        // separate visual language, so the on/off "selectedBg is solid ink"
+        // convention (see RawdogLookAndFeel::setColour(TextButton::buttonOnColourId, ...)
+        // below) still holds with ink and selectedBg swapped end-to-end.
+        static Palette dark()
         {
-            static const Palette instance;
+            Palette p;
+            p.windowBg   = juce::Colour(0xff2e2e2e);
+            p.surface    = juce::Colour(0xff1e1e1e);
+            p.ink        = juce::Colour(0xffe6e6e6);
+            p.inkMuted   = juce::Colour(0xff999999);
+            p.divider    = juce::Colour(0xff555555);
+            p.selectedBg = juce::Colour(0xffe6e6e6);
+            p.selectedFg = juce::Colour(0xff000000);
+            return p;
+        }
+
+        static const Palette& get() { return current(); }
+
+        static bool isDarkModeEnabled() { return darkEnabled(); }
+
+        // Swaps which palette Palette::get() returns -- callers driving a
+        // visible theme switch still need to follow this with
+        // RawdogLookAndFeel::refreshAllWindows() so already-painted widgets
+        // (and colours cached once at construction, via lookAndFeelChanged()
+        // overrides) pick the new palette up.
+        static void setDarkModeEnabled(bool enabled)
+        {
+            darkEnabled() = enabled;
+            current() = enabled ? dark() : Palette();
+        }
+
+    private:
+        static Palette& current()
+        {
+            static Palette instance;
             return instance;
+        }
+
+        static bool& darkEnabled()
+        {
+            static bool flag = false;
+            return flag;
         }
     };
 
     static constexpr const char* emphasizedPropertyKey = "rawdogEmphasized";
 
-    RawdogLookAndFeel()
+    RawdogLookAndFeel() { applyPalette(); }
+
+    // Re-reads Palette::get() and reapplies every colour below -- the same
+    // work the constructor does, split out so a theme switch can restyle the
+    // one long-lived instance (Main.cpp's lookAndFeel member) in place rather
+    // than needing to swap LookAndFeel instances entirely.
+    void applyPalette()
     {
         const auto& p = Palette::get();
 
@@ -71,6 +118,23 @@ public:
         setColour(juce::Slider::backgroundColourId, p.surface);
 
         setColour(juce::Label::textColourId, p.ink);
+    }
+
+    // Called after Palette::setDarkModeEnabled() flips the active palette --
+    // reapplies it to the installed default LookAndFeel (Main.cpp's
+    // lookAndFeel member) and asks every top-level window to repaint,
+    // including components with a lookAndFeelChanged() override that
+    // reapplies a colour cached once at construction (e.g. a Label's
+    // textColourId set directly rather than left to the LookAndFeel).
+    static void refreshAllWindows()
+    {
+        if (auto* laf = dynamic_cast<RawdogLookAndFeel*>(&juce::Desktop::getInstance().getDefaultLookAndFeel()))
+            laf->applyPalette();
+
+        auto& desktop = juce::Desktop::getInstance();
+        for (int i = 0; i < desktop.getNumComponents(); ++i)
+            if (auto* topLevel = desktop.getComponent(i))
+                topLevel->sendLookAndFeelChange();
     }
 
     juce::Font getLabelFont(juce::Label& label) override
@@ -198,9 +262,12 @@ public:
         g.setColour(button.isEnabled() ? p.ink : p.inkMuted);
         g.drawRect(bounds, borderWeight);
 
-        // Inset highlight bevel, inside the border.
+        // Inset highlight bevel, inside the border -- brightened relative to
+        // the button's own fill rather than a hardcoded white, so it still
+        // reads as a highlight (not a jarring bright streak) against the dark
+        // palette's much darker fill colours.
         auto inner = bounds.reduced(borderWeight);
-        g.setColour(juce::Colours::white.withAlpha(0.9f));
+        g.setColour(fill.brighter(0.6f).withAlpha(0.9f));
         g.drawLine(inner.getX(), inner.getY(), inner.getRight(), inner.getY(), 1.0f);
         g.drawLine(inner.getX(), inner.getY(), inner.getX(), inner.getBottom(), 1.0f);
     }

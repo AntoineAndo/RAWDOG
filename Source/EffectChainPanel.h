@@ -68,6 +68,14 @@ public:
         RawdogLookAndFeel::setEmphasized(applyButton);
     }
 
+    // chainCountLabel's textColourId (set once in the constructor above) is
+    // cached on the Label rather than looked up from the LookAndFeel per
+    // paint, so a theme switch needs this reapplied explicitly.
+    void lookAndFeelChanged() override
+    {
+        chainCountLabel.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
+    }
+
     void rebuild(const std::vector<ChainSlot>& chain, int selectedIndex)
     {
         content.rebuild(chain, selectedIndex, onSelectSlot, onRemoveSlot, onToggleBypass, onReorderSlot,
@@ -240,18 +248,14 @@ private:
                      std::function<void(int, const juce::MouseEvent&)> onGripDownIn,
                      std::function<void(const juce::MouseEvent&)> onGripDragIn,
                      std::function<void(const juce::MouseEvent&)> onGripUpIn)
-            : index(indexIn), selected(isSelected), onSelect(onSelectIn)
+            : index(indexIn), selected(isSelected), bypassed(bypassedIn), onSelect(onSelectIn)
         {
-            const auto& palette = RawdogLookAndFeel::Palette::get();
-            const auto textColour = selected ? palette.selectedFg : (bypassedIn ? palette.inkMuted : palette.ink);
-
             setMouseCursor(juce::MouseCursor::PointingHandCursor);
 
             indexLabel.setText(juce::String(indexIn + 1).paddedLeft('0', 2), juce::dontSendNotification);
             indexLabel.setFont(RawdogLookAndFeel::chromeFont(8.0f));
             indexLabel.setJustificationType(juce::Justification::centred);
             indexLabel.setInterceptsMouseClicks(false, false);
-            indexLabel.setColour(juce::Label::textColourId, selected ? palette.selectedFg : palette.inkMuted);
             addAndMakeVisible(indexLabel);
 
             checkbox.checked = ! bypassedIn;
@@ -262,15 +266,15 @@ private:
             nameLabel.setFont(RawdogLookAndFeel::chromeFont(11.0f));
             nameLabel.setMinimumHorizontalScale(0.6f); // shrinks-to-fit rather than truncating a long plugin name outright
             nameLabel.setInterceptsMouseClicks(false, false);
-            nameLabel.setColour(juce::Label::textColourId, textColour);
             addAndMakeVisible(nameLabel);
 
             stateLabel.setText(bypassedIn ? "bypassed" : juce::String(), juce::dontSendNotification);
             stateLabel.setFont(RawdogLookAndFeel::chromeFont(8.0f));
             stateLabel.setJustificationType(juce::Justification::centredRight);
             stateLabel.setInterceptsMouseClicks(false, false);
-            stateLabel.setColour(juce::Label::textColourId, selected ? palette.selectedFg : palette.inkMuted);
             addAndMakeVisible(stateLabel);
+
+            applyLabelColours();
 
             grip.onGripDown = [onGripDownIn, indexIn](const juce::MouseEvent& e) { if (onGripDownIn) onGripDownIn(indexIn, e); };
             grip.onGripDrag = std::move(onGripDragIn);
@@ -288,6 +292,13 @@ private:
             if (isEnabled() && contains(e.getPosition()) && onSelect)
                 onSelect(index);
         }
+
+        // indexLabel/nameLabel/stateLabel's textColourId is set directly
+        // (rather than left to the LookAndFeel) so selected/bypassed rows can
+        // each use a different palette colour -- reapply on a theme switch,
+        // since rows are only otherwise rebuilt on chain mutations/selection
+        // changes, not on RawdogLookAndFeel::refreshAllWindows().
+        void lookAndFeelChanged() override { applyLabelColours(); }
 
         void paint(juce::Graphics& g) override
         {
@@ -331,8 +342,19 @@ private:
         static constexpr int shadowOffset = 2;
         juce::Rectangle<int> boxBounds() const { return getLocalBounds().withTrimmedRight(shadowOffset).withTrimmedBottom(shadowOffset); }
 
+        void applyLabelColours()
+        {
+            const auto& palette = RawdogLookAndFeel::Palette::get();
+            const auto textColour = selected ? palette.selectedFg : (bypassed ? palette.inkMuted : palette.ink);
+
+            indexLabel.setColour(juce::Label::textColourId, selected ? palette.selectedFg : palette.inkMuted);
+            nameLabel.setColour(juce::Label::textColourId, textColour);
+            stateLabel.setColour(juce::Label::textColourId, selected ? palette.selectedFg : palette.inkMuted);
+        }
+
         int index;
         bool selected;
+        bool bypassed;
         std::function<void(int)> onSelect;
         juce::Label indexLabel, nameLabel, stateLabel;
         CheckboxComponent checkbox;

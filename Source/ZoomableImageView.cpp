@@ -333,7 +333,10 @@ void ZoomableImageView::mouseDown(const juce::MouseEvent& e)
 {
     if (! image.isValid())
     {
-        if (onClickWithNoImage != nullptr)
+        // Only the dashed drop-zone card is a real click target -- clicking
+        // the dot-matted mat around it (which just reads as background, not
+        // part of the call to action) shouldn't also open the file chooser.
+        if (onClickWithNoImage != nullptr && getCardBounds().contains(e.getPosition()))
             onClickWithNoImage();
         return;
     }
@@ -445,7 +448,17 @@ void ZoomableImageView::mouseUp(const juce::MouseEvent&)
 
 void ZoomableImageView::mouseMove(const juce::MouseEvent& e)
 {
-    if (! image.isValid() || ! highlightRegion.has_value())
+    if (! image.isValid())
+    {
+        // Pointer only over the actual click target (the dashed card), not
+        // the dot-matted mat around it -- matches mouseDown()'s same bounds
+        // check above.
+        setMouseCursor(getCardBounds().contains(e.getPosition()) ? juce::MouseCursor::PointingHandCursor
+                                                                  : juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    if (! highlightRegion.has_value())
     {
         setMouseCursor(juce::MouseCursor::NormalCursor);
 

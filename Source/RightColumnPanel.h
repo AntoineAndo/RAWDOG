@@ -58,6 +58,14 @@ public:
     // Forwarded down to WaveformSectionPanel — see its own doc comment.
     void updateSplitVisibility() { waveformSection.updateSplitVisibility(); }
 
+    // imageSizeLabelRef's textColourId (set once in the constructor above) is
+    // cached on the Label rather than looked up from the LookAndFeel per
+    // paint, so a theme switch needs this reapplied explicitly.
+    void lookAndFeelChanged() override
+    {
+        imageSizeLabelRef.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
+    }
+
     // With no image loaded there's no waveform to show at all -- the section
     // (and its divider) is hidden entirely rather than shown empty/disabled,
     // and the image preview fills the whole column instead.

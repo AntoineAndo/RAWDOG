@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <array>
 #include <optional>
+#include "AppearanceSettingsStore.h"
 #include "BusySpinner.h"
 #include "ChainSlot.h"
 #include "EffectChainPanel.h"
@@ -310,6 +311,7 @@ private:
     PluginPresetsStore pluginPresetsStore;
     PluginDirectoriesStore pluginDirectoriesStore;
     PluginEnablementStore pluginEnablementStore;
+    AppearanceSettingsStore appearanceSettingsStore;
     PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore, pluginEnablementStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
