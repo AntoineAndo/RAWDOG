@@ -24,8 +24,6 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
         // export the last-committed image, not the current unapplied preview.
         callbacks.populateFileMenuExportItem(menu);
         callbacks.populateFileMenuResetItem(menu);
-        menu.addSeparator();
-        menu.addItem(rescanPluginsMenuItem, "Rescan Plugins", ! callbacks.isScanning() && ! panelOpen);
     }
     else if (topLevelMenuIndex == 1)
     {
@@ -39,8 +37,7 @@ void MainMenuModel::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
 {
     switch (menuItemID)
     {
-        case rescanPluginsMenuItem:  callbacks.onRescan(); break;
-        case editHeaderMenuItem:     callbacks.onEditHeader(); break;
+        case editHeaderMenuItem: callbacks.onEditHeader(); break;
         default: break;
     }
 }

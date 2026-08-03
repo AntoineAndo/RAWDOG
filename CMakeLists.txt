@@ -13,7 +13,13 @@ juce_add_gui_app(RAWDOG
     ICON_BIG "${CMAKE_SOURCE_DIR}/Assets/icon.png"
 )
 
+# Embeds Assets/icon.png as BinaryData::icon_png so the About panel can load
+# it at runtime -- ICON_BIG above only feeds the app bundle's own .icns, it
+# isn't a resource the running app can read back out of itself.
+juce_add_binary_data(RawdogAssets SOURCES Assets/icon.png)
+
 target_sources(RAWDOG PRIVATE
+    Source/AboutWindow.cpp
     Source/AppearanceSettingsTab.cpp
     Source/Main.cpp
     Source/LivePreviewWorker.cpp
@@ -48,6 +54,7 @@ target_compile_definitions(RAWDOG PRIVATE
 )
 
 target_link_libraries(RAWDOG PRIVATE
+    RawdogAssets
     juce::juce_gui_extra
     juce::juce_audio_utils
     juce::juce_audio_processors

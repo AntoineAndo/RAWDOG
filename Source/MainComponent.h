@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <array>
 #include <optional>
+#include "AboutWindow.h"
 #include "AppearanceSettingsStore.h"
 #include "BusySpinner.h"
 #include "ChainSlot.h"
@@ -71,14 +72,17 @@ private:
                       // loadImageCommand above, via populateFileMenuResetItem.
         exportImageCommand, // Cmd+S — same command-item treatment again, via
                            // populateFileMenuExportItem.
-        openSettingsCommand // Cmd+, — backs the "Settings..." item added to
+        openSettingsCommand, // Cmd+, — backs the "Settings..." item added to
                             // the native "RAWDOG" app menu itself (see the
                             // extraAppleMenu built around setMacMainMenu() in
                             // the constructor), not the File/Edit menu bar.
+        aboutCommand // Backs the "About RAWDOG" item in that same
+                     // extraAppleMenu, above Settings — see the constructor.
     };
 
     void refreshPluginList();
     void openSettingsClicked();
+    void aboutClicked();
     void loadImageClicked();
 
     // Shared tail of loadImageClicked()'s file-chooser callback and
@@ -315,9 +319,7 @@ private:
     PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore, pluginEnablementStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
-        [this] { return scanner.isScanning(); },
         [this] { return ! pluginChain.empty() || headerEditorPanel != nullptr || imageLoadInProgress; },
-        [this] { refreshPluginList(); },
         [this](juce::PopupMenu& menu)
         {
             menu.addCommandItem(&commandManager, undoCommand);
@@ -397,6 +399,9 @@ private:
     // Lazily created on the first "Settings..." click and reused after —
     // openSettingsClicked() just re-shows/refronts it rather than recreating.
     std::unique_ptr<SettingsWindow> settingsWindow;
+
+    // Same lazily-created/reused-after lifetime as settingsWindow above.
+    std::unique_ptr<AboutWindow> aboutWindow;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

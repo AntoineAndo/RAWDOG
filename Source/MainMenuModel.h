@@ -12,9 +12,7 @@ class MainMenuModel : public juce::MenuBarModel
 public:
     struct Callbacks
     {
-        std::function<bool()> isScanning;
         std::function<bool()> isPanelOpen;
-        std::function<void()> onRescan;
         std::function<void(juce::PopupMenu&)> populateEditMenu;
 
         // Appended at the end, not inserted -- Callbacks is initialised
@@ -52,8 +50,7 @@ public:
 private:
     enum MenuItemIDs
     {
-        rescanPluginsMenuItem = 1,
-        editHeaderMenuItem
+        editHeaderMenuItem = 1
     };
 
     Callbacks callbacks;

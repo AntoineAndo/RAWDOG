@@ -32,6 +32,8 @@ MainComponent::MainComponent()
     // extraAppleMenu is deep-copied by setMacMainMenu() internally, so it's
     // safe as a local that goes out of scope right after this call.
     juce::PopupMenu extraAppleMenu;
+    extraAppleMenu.addCommandItem(&commandManager, aboutCommand);
+    extraAppleMenu.addSeparator();
     extraAppleMenu.addCommandItem(&commandManager, openSettingsCommand);
     juce::MenuBarModel::setMacMainMenu(&menuModel, &extraAppleMenu);
 
@@ -323,6 +325,15 @@ void MainComponent::openSettingsClicked()
     settingsWindow->toFront(true);
 }
 
+void MainComponent::aboutClicked()
+{
+    if (aboutWindow == nullptr)
+        aboutWindow = std::make_unique<AboutWindow>();
+
+    aboutWindow->setVisible(true);
+    aboutWindow->toFront(true);
+}
+
 void MainComponent::resetClicked()
 {
     if (originalImage == nullptr)
@@ -486,6 +497,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
     commands.add(resetCommand);
     commands.add(exportImageCommand);
     commands.add(openSettingsCommand);
+    commands.add(aboutCommand);
 }
 
 void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -574,6 +586,13 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             result.setActive(true);
             break;
 
+        case aboutCommand:
+            // Same "deliberately always active" reasoning as
+            // openSettingsCommand just above.
+            result.setInfo("About", "Show version and app info", "General", 0);
+            result.setActive(true);
+            break;
+
         default:
             break;
     }
@@ -607,6 +626,10 @@ bool MainComponent::perform(const InvocationInfo& info)
 
         case openSettingsCommand:
             openSettingsClicked();
+            return true;
+
+        case aboutCommand:
+            aboutClicked();
             return true;
 
         default: return false;
