@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "GeneralSettingsStore.h"
 #include "LeftColumnPanel.h"
 #include "PluginDirectoriesStore.h"
 #include "PluginEnablementStore.h"
@@ -9,20 +10,24 @@
 // SettingsWindow's "Plugins" tab: an editable list of directories to scan, a
 // checklist of every plugin the last scan found (both formats, unfiltered --
 // unlike the main editor's PluginListModel, which hides disabled plugins
-// entirely), and a Rescan button driving the same scan pipeline the File
-// menu's "Rescan Plugins" item uses.
+// entirely), a Rescan button driving the same scan pipeline the File menu's
+// "Rescan Plugins" item uses, and a checkbox for whether a selected chain
+// slot's editor opens embedded below the effect chain rack or in its own
+// floating window (see MainComponent::selectChainSlot()).
 class PluginsSettingsTab : public juce::Component,
                            private juce::Timer
 {
 public:
     PluginsSettingsTab(PluginDirectoriesStore& directoriesStore,
                         PluginEnablementStore& enablementStore,
+                        GeneralSettingsStore& generalStore,
                         PluginScanner& scanner,
                         std::function<void()> onRescanRequested,
                         std::function<void()> onEnablementChanged);
     ~PluginsSettingsTab() override;
 
     void resized() override;
+    void paint(juce::Graphics& g) override;
 
     // Refreshes immediately (in case a scan finished while this tab was
     // hidden -- e.g. the File menu's "Rescan Plugins" item, which has no
@@ -48,25 +53,38 @@ private:
 
     PluginDirectoriesStore& directoriesStore;
     PluginEnablementStore& enablementStore;
+    GeneralSettingsStore& generalStore;
     PluginScanner& scanner;
     std::function<void()> onRescanRequested;
     std::function<void()> onEnablementChanged;
 
-    juce::Label directoriesLabel { {}, "Plugin Directories" };
+    juce::Label directoriesLabel { {}, "PLUGIN DIRECTORIES" };
     juce::ListBox directoryListBox;
     std::unique_ptr<DirectoryListModel> directoryListModel;
     juce::TextButton addDirectoryButton { "Add Directory..." };
     juce::TextButton removeDirectoryButton { "Remove" };
     juce::TextButton revertDirectoriesButton { "Revert to Default" };
 
-    juce::Label pluginsLabel { {}, "Plugins" };
+    juce::Label pluginsLabel { {}, "INSTALLED PLUGINS" };
     LeftColumnPanel::SearchField pluginSearchField;
     juce::ListBox pluginChecklistBox;
     std::unique_ptr<PluginChecklistModel> pluginChecklistModel;
 
     juce::TextButton rescanButton { "Rescan Plugins" };
 
+    juce::ToggleButton pluginWindowModeToggle { "Open plugins in a separate window" };
+
     std::unique_ptr<juce::FileChooser> directoryChooser;
+
+    // Section-header divider lines (drawn in paint()) and the rules above the
+    // rescan row and the window-mode row below it -- cached in resized()
+    // alongside the layout math that determines them, same pattern
+    // RightColumnPanel/WaveformSectionPanel use for their own fixed strip
+    // dividers.
+    int directoriesHeaderDividerY = 0;
+    int pluginsHeaderDividerY = 0;
+    int rescanDividerY = 0;
+    int windowModeDividerY = 0;
 
     void addDirectoryClicked();
     void removeDirectoryClicked();

@@ -7,7 +7,7 @@
 // live preview can be refreshed. AudioProcessorListener's callbacks may fire off
 // the message thread (JUCE's own docs call this out), so this coalesces bursts
 // (e.g. a knob drag firing many callbacks/sec) into a single message-thread
-// callback per event-loop turn via AsyncUpdater — that's also a sufficient,
+// callback per event-loop turn via AsyncUpdater - that's also a sufficient,
 // free debounce, no separate Timer needed.
 class PluginParameterWatcher : private juce::AudioProcessorListener,
                                 private juce::AsyncUpdater
@@ -21,7 +21,7 @@ public:
 
     // Fired (coalesced the same way as onPluginParametersChanged above) with
     // the display name and current value-as-text of whichever parameter last
-    // changed — for surfacing "what just changed" in a status line. Only
+    // changed - for surfacing "what just changed" in a status line. Only
     // fired from an actual per-parameter change (audioProcessorParameterChanged
     // below); the more general audioProcessorChanged() state-change
     // notification (program change, etc.) has no single parameter to report,
@@ -32,10 +32,10 @@ public:
 
     // RAII guard for LivePreviewWorker's ramp-evaluation pass: parameter-automation
     // ramps drive a plugin parameter via setValueNotifyingHost() from the worker
-    // thread (see LivePreviewWorker), which — unguarded — would look identical to a
+    // thread (see LivePreviewWorker), which - unguarded - would look identical to a
     // real user knob-drag and re-trigger a live-preview recompute of the same
     // deterministic ramps, forever. The suppression is scoped to a thread_local
-    // flag, so it only ever suppresses the ramp-writing thread's own writes —
+    // flag, so it only ever suppresses the ramp-writing thread's own writes -
     // a real gesture arriving concurrently on the message thread (or any other
     // thread) is never swallowed, since setValueNotifyingHost() invokes listeners
     // synchronously on whichever thread calls it.

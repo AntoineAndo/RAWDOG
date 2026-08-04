@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "AppearanceSettingsStore.h"
 #include "AppearanceSettingsTab.h"
+#include "GeneralSettingsStore.h"
 #include "PluginDirectoriesStore.h"
 #include "PluginEnablementStore.h"
 #include "PluginScanner.h"
@@ -21,6 +22,7 @@ public:
     SettingsWindow(PluginDirectoriesStore& directoriesStore,
                    PluginEnablementStore& enablementStore,
                    AppearanceSettingsStore& appearanceStore,
+                   GeneralSettingsStore& generalStore,
                    PluginScanner& scanner,
                    std::function<void()> onRescanRequested,
                    std::function<void()> onEnablementChanged,
@@ -50,6 +52,7 @@ private:
         Content(PluginDirectoriesStore& directoriesStore,
                 PluginEnablementStore& enablementStore,
                 AppearanceSettingsStore& appearanceStore,
+                GeneralSettingsStore& generalStore,
                 PluginScanner& scanner,
                 std::function<void()> onRescanRequested,
                 std::function<void()> onEnablementChanged,

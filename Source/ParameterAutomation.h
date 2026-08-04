@@ -4,7 +4,7 @@
 #include <vector>
 
 // A plugin parameter's value over the span of whatever's currently being
-// processed (a waveform selection, or the whole buffer when there's none) —
+// processed (a waveform selection, or the whole buffer when there's none) -
 // lets Apply fade a parameter in/out across that span instead of holding it
 // static for the whole pass.
 enum class Easing { linear, easeIn, easeOut, easeInOut };
@@ -30,7 +30,7 @@ struct RampSegment
     Easing easing = Easing::linear;
 };
 
-// Segments are expected sorted by startFraction and non-overlapping —
+// Segments are expected sorted by startFraction and non-overlapping -
 // ParameterAutomationPanel is responsible for keeping them that way.
 struct ParameterAutomation
 {
@@ -43,7 +43,7 @@ struct ParameterAutomation
     // turn each segment's start/endFraction into actual timestamps.
     //
     // Before the first segment: holds at its initialValue. Between segments:
-    // holds at the previous segment's targetValue — this is what turns "one
+    // holds at the previous segment's targetValue - this is what turns "one
     // fade-in segment + one fade-out segment" into an in/sustain/out envelope
     // without needing a separate "sustain" concept. After the last segment:
     // holds at its targetValue.

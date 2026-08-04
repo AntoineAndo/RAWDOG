@@ -101,6 +101,7 @@ void MainComponent::selectChainSlot(int index)
     livePreviewWorker.waitUntilIdle();
 
     leftColumn.setEditorPanel(nullptr);
+    pluginEditorWindow.reset();
     pluginEditorPanel.reset();
 
     selectedChainSlot = index;
@@ -120,15 +121,29 @@ void MainComponent::selectChainSlot(int index)
     },
     slot.ramps);
 
-    leftColumn.setEditorPanel(pluginEditorPanel.get());
+    if (generalSettingsStore.isPluginWindowModeEnabled())
+    {
+        // No embedded panel -- LeftColumnPanel::resized() already fills the
+        // whole left column with the effect chain rack whenever currentPanel
+        // is null, so the outer left/right split below is left untouched.
+        pluginEditorWindow = std::make_unique<PluginEditorWindow>(plugin.getName(), *pluginEditorPanel);
+        pluginEditorWindow->onCloseButtonPressed = [this] { deselectChainSlot(); };
+        pluginEditorWindow->setVisible(true);
+        pluginEditorWindow->toFront(true);
+    }
+    else
+    {
+        leftColumn.setEditorPanel(pluginEditorPanel.get());
 
-    // Re-seed the left/right column split so the left column starts out sized
-    // to fit this slot's editor, capped at half the window width, so ordinary
-    // window resizes afterward don't reset it. Fires on every reselection,
-    // not just when the mounted plugin actually changes -- see PROJECT.md's
-    // note on this being a foreseeable, accepted side effect of the chain.
-    outerLayout.setItemLayout(0, 200, -0.5, pluginEditorPanel->getPreferredWidth());
-    resized();
+        // Re-seed the left/right column split so the left column starts out
+        // sized to fit this slot's editor, capped at half the window width,
+        // so ordinary window resizes afterward don't reset it. Fires on
+        // every reselection, not just when the mounted plugin actually
+        // changes -- see PROJECT.md's note on this being a foreseeable,
+        // accepted side effect of the chain.
+        outerLayout.setItemLayout(0, 200, -0.5, pluginEditorPanel->getPreferredWidth());
+        resized();
+    }
 
     pluginParamWatcher.attachTo(plugin);
     updatePluginListEnablement();
@@ -165,6 +180,7 @@ void MainComponent::deselectChainSlot()
     livePreviewWorker.waitUntilIdle();
 
     leftColumn.setEditorPanel(nullptr);
+    pluginEditorWindow.reset();
     pluginEditorPanel.reset();
     pluginParamWatcher.attachTo(nullptr);
 
@@ -217,6 +233,7 @@ void MainComponent::removeChainSlot(int index)
     if (removingSelected)
     {
         leftColumn.setEditorPanel(nullptr);
+        pluginEditorWindow.reset();
         pluginEditorPanel.reset();
         pluginParamWatcher.attachTo(nullptr);
     }
@@ -566,6 +583,7 @@ void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
     imagePreview.setFastResampling(false);
 
     leftColumn.setEditorPanel(nullptr);
+    pluginEditorWindow.reset();
     pluginEditorPanel.reset();
     pluginParamWatcher.attachTo(nullptr);
 
@@ -596,7 +614,7 @@ void MainComponent::applyClicked()
 {
     // A selection drag fires onSelectionChanged on every mouse-move frame, which
     // MainComponent coalesces into at most one recompute per event-loop turn (see
-    // handleAsyncUpdate()) — but that means a refreshLivePreview() submit can
+    // handleAsyncUpdate()) - but that means a refreshLivePreview() submit can
     // momentarily lag behind the true current selection between the last drag
     // frame and the next turn. Flush that first.
     handleUpdateNowIfNeeded();

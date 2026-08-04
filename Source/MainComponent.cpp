@@ -28,7 +28,7 @@ MainComponent::MainComponent()
     setWantsKeyboardFocus(true);
 
     // Adds "Settings..." to the native "RAWDOG" app menu itself (the one with
-    // auto-generated About/Services/Hide/Quit), not the File/Edit menu bar —
+    // auto-generated About/Services/Hide/Quit), not the File/Edit menu bar -
     // extraAppleMenu is deep-copied by setMacMainMenu() internally, so it's
     // safe as a local that goes out of scope right after this call.
     juce::PopupMenu extraAppleMenu;
@@ -74,7 +74,7 @@ MainComponent::MainComponent()
     waveformView.onBeforeSelectionChange = [this]
     {
         // While a chain session is open, a new selection drag only rescopes
-        // the uncommitted preview (see onSelectionChanged above) — nothing has
+        // the uncommitted preview (see onSelectionChanged above) - nothing has
         // been committed yet, so this must not push an undo entry.
         if (pluginChain.empty())
             pushUndoState();
@@ -87,14 +87,6 @@ MainComponent::MainComponent()
     sampleModeCombo.addItem("Unipolar", 2);
     sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
     sampleModeCombo.onChange = [this] { sampleModeChanged(); };
-
-    // Placeholder shown until a real image loads and updateImageSizeLabel()
-    // overwrites it -- matches the design mockup's disabled-state dimensions
-    // readout rather than leaving this blank.
-    imageSizeLabel.setText(juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " x "
-                            + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + "  -  "
-                            + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " MB",
-                            juce::dontSendNotification);
 
     // Always visible, matching the design mockup, which keeps Sample Mode
     // visible-but-greyed rather than hidden outright. updatePluginListEnablement()
@@ -109,7 +101,7 @@ MainComponent::MainComponent()
         {
             activeSelectionChannel = (RawImage::Channel) c;
 
-            // Only one lane has an active selection at a time — starting a new
+            // Only one lane has an active selection at a time - starting a new
             // one elsewhere clears the others. setSelectionSampleRange({}) (not
             // clearSelection()) deliberately, since clearSelection() itself fires
             // onBeforeSelectionChange and would recurse into pushUndoState() for
@@ -124,7 +116,7 @@ MainComponent::MainComponent()
     }
 
     // Hidden until refreshChannelWaveforms() shows it for a loaded PNG that
-    // actually has an alpha channel — see hasAlphaChannel().
+    // actually has an alpha channel - see hasAlphaChannel().
     channelWaveformViews[3].setVisible(false);
 
     livePreviewWorker.onResultReady = [this](LivePreviewWorker::Result result) { applyLivePreviewResult(std::move(result)); };
@@ -134,7 +126,7 @@ MainComponent::MainComponent()
     pluginParamWatcher.onParameterValueChanged = [this](const juce::String& parameterName, const juce::String& valueText)
     {
         if (selectedChainSlot >= 0)
-            setStatus(pluginChain[(size_t) selectedChainSlot].plugin->getName() + " — " + parameterName + ": " + valueText);
+            setStatus(pluginChain[(size_t) selectedChainSlot].plugin->getName() + " - " + parameterName + ": " + valueText);
     };
 
     effectChainPanel.onSelectSlot = [this](int index) { selectChainSlot(index); };
@@ -185,7 +177,7 @@ MainComponent::MainComponent()
         pluginListBox.repaint();
     };
 
-    setStatus("Ready " + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " open an image to begin.");
+    setStatus("Ready - open an image to begin.");
     updatePluginListEnablement();
 
     setSize(900, 700);
@@ -195,12 +187,12 @@ MainComponent::MainComponent()
         listModel.refresh();
         pluginListBox.updateContent();
         pluginListBox.repaint();
-        setStatus("Ready " + juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")) + " open an image to begin. ("
+        setStatus("Ready - open an image to begin. ("
                     + juce::String(scanner.getKnownPluginList().getNumTypes()) + " cached plugin(s) loaded.)");
     }
     else
     {
-        // First launch on this machine — nothing cached yet, so an initial
+        // First launch on this machine - nothing cached yet, so an initial
         // scan is unavoidable. Every subsequent launch loads the cache above
         // instead.
         refreshPluginList();
@@ -265,14 +257,14 @@ void MainComponent::refreshPluginList()
     setStatus("Scanning for plugins...");
 
     // "Rescan Plugins" must gray out immediately (native mac menu enablement
-    // otherwise goes stale until menuItemsChanged() is called explicitly —
+    // otherwise goes stale until menuItemsChanged() is called explicitly -
     // see PROJECT.md) so a second click can't race the background scan.
     menuModel.menuItemsChanged();
 
     scanner.scanAll(pluginDirectoriesStore.getAsSearchPath(), [this]
     {
         // Seed a default-disabled state the first time a duplicate AU is
-        // ever seen, without clobbering a user's later manual re-enable —
+        // ever seen, without clobbering a user's later manual re-enable -
         // see PluginEnablementStore::hasDefaultBeenAssigned()'s doc comment.
         for (const auto& id : scanner.getLastDuplicateAudioUnitIdentifiers())
         {
@@ -291,7 +283,7 @@ void MainComponent::refreshPluginList()
         auto status = "Found " + juce::String(scanner.getKnownPluginList().getNumTypes()) + " plugin(s).";
 
         // Plugins that crashed a previous scan are skipped rather than
-        // re-probed (see PluginScanner's dead man's pedal file) — surface
+        // re-probed (see PluginScanner's dead man's pedal file) - surface
         // that so a rescan showing fewer plugins than expected isn't
         // mistaken for a scanning bug.
         const auto& skippedCrashers = scanner.getLastSkippedCrashers();
@@ -309,7 +301,7 @@ void MainComponent::openSettingsClicked()
     if (settingsWindow == nullptr)
     {
         settingsWindow = std::make_unique<SettingsWindow>(
-            pluginDirectoriesStore, pluginEnablementStore, appearanceSettingsStore, scanner,
+            pluginDirectoriesStore, pluginEnablementStore, appearanceSettingsStore, generalSettingsStore, scanner,
             [this] { refreshPluginList(); },
             [this] { listModel.refresh(); pluginListBox.updateContent(); pluginListBox.repaint(); },
             []
@@ -525,7 +517,7 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
 
         case cancelEditorCommand:
             // Not shown in any menu (setInfo's category/shortcut text is only
-            // ever surfaced if this were added to a PopupMenu, which it isn't) —
+            // ever surfaced if this were added to a PopupMenu, which it isn't) -
             // purely a keyboard shortcut, mirroring whichever panel's own
             // Cancel button is currently on-screen. Deliberately still gated
             // on pluginEditorPanel specifically (not pluginChain.empty()):
@@ -578,7 +570,7 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // Deliberately always active: this backs an item in the native
             // "RAWDOG" app menu's extraAppleMenu (see the constructor), which
             // JUCE only rebuilds on a fresh setMacMainMenu() call, never on
-            // menuModel.menuItemsChanged() — so a conditionally-active state
+            // menuModel.menuItemsChanged() - so a conditionally-active state
             // here would go stale. Settings doesn't touch pluginChain/
             // workingImage, so there's no real reason to disable it anyway.
             result.setInfo("Settings...", "Open plugin management settings", "General", 0);
@@ -716,7 +708,7 @@ void MainComponent::updatePluginListEnablement()
     rightColumn.setHasImage(hasImage);
 
     // The bipolar/unipolar dropdown is only relevant while a chain session is
-    // open — this function already runs after every open/close. Keyed on
+    // open - this function already runs after every open/close. Keyed on
     // pluginChain (the session), not pluginEditorPanel (a specific mounted
     // slot): sample mode affects the whole chain's live preview regardless of
     // whether any one slot is currently selected for editing.
@@ -763,7 +755,7 @@ void MainComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, doubl
 
     // Scroll position is absolute, and a channel plane has a different total
     // sample count than the interleaved buffer (width*height vs.
-    // width*height*channels) — convert to a fraction of the primary view's own
+    // width*height*channels) - convert to a fraction of the primary view's own
     // sample count, then re-apply that fraction to every view's own count, so
     // all of them (the plain waveform plus every channel lane) stay showing
     // the same proportional field of view.

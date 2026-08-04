@@ -146,7 +146,7 @@ void MainComponent::loadImageFile(const juce::File& file)
 
                 // A freshly-loaded RawImage always defaults to bipolar, but the
                 // combo and waveform views are session-long UI state left over
-                // from any previous image — reset them to match.
+                // from any previous image - reset them to match.
                 self->sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
                 self->waveformView.setSampleMode(SampleFormat::Mode::bipolar);
                 for (auto& view : self->channelWaveformViews)
@@ -247,9 +247,9 @@ void MainComponent::exportImageClicked()
     }
 
     // Export always produces a PNG, regardless of the format the image was
-    // loaded from — a real, widely-viewable encoded image rather than a raw
+    // loaded from - a real, widely-viewable encoded image rather than a raw
     // BMP/PNM byte reconstruction. Defaults to Documents (or wherever the
-    // user last exported to — see exportSettingsStore) and suggests the
+    // user last exported to - see exportSettingsStore) and suggests the
     // loaded file's own name with "_modified" appended, rather than a fixed
     // "export.png" that gives no hint which image it came from.
     const auto suggestedName = (loadedImageBaseName.isNotEmpty() ? loadedImageBaseName : "export") + "_modified.png";

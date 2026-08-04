@@ -42,7 +42,7 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
     // Name and vendor/format are drawn as two separate passes, not one string,
     // so the vendor/format suffix can be visually de-emphasized (dimmer colour)
     // relative to the name -- with dozens of plugins sharing the same vendor,
-    // a uniform-weight "Name  —  Vendor  (Format)" on every row reads as a wall
+    // a uniform-weight "Name - Vendor (Format)" on every row reads as a wall
     // of near-identical text; making the name the one bright element per row
     // is what actually needs scanning.
     const auto textArea = juce::Rectangle<int>(starX + starColumnWidth + 4, 0,
@@ -54,19 +54,8 @@ void PluginListModel::paintPluginRow(juce::Graphics& g, const juce::PluginDescri
     g.drawText(desc.name, textArea.getX(), textArea.getY(), (int) std::ceil(nameWidth), height,
                 juce::Justification::centredLeft);
 
-    // Built via operator<< onto an already-constructed juce::String, not
-    // operator+ starting from a raw "  —  " literal: juce::String's
-    // const-char*-taking *constructor* (invoked by the free
-    // operator+(const char*, const String&) that a leading raw literal would
-    // trigger) treats its input as ASCII, not UTF-8 -- only operator+=/<<
-    // on an existing String use the UTF-8-safe path. Starting from an empty
-    // String and appending (ASCII-only literals are byte-identical either
-    // way; the em dash is explicit CharPointer_UTF8, same convention as the
-    // star glyphs above) sidesteps that gotcha entirely.
-    static const juce::String emDash(juce::CharPointer_UTF8("\xE2\x80\x94"));
-
     juce::String suffix;
-    suffix << "  " << emDash << "  " << desc.manufacturerName << "  (" << desc.pluginFormatName << ")";
+    suffix << " - " << desc.manufacturerName << "  (" << desc.pluginFormatName << ")";
 
     g.setColour(mutedColour);
     g.drawText(suffix, textArea.getX() + (int) nameWidth, 0, textArea.getWidth() - (int) nameWidth, height,

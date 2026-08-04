@@ -69,7 +69,7 @@ namespace
 
         // Bytes outside the selection are provably untouched (see PROJECT.md's "Apply
         // scoping"), so start from a plain byte copy of the source and only pay the
-        // float round-trip for the selected sub-range — on a large image with a small
+        // float round-trip for the selected sub-range - on a large image with a small
         // selection, converting the whole buffer on every live-preview tick would be
         // pure waste. The float round-trip happens exactly once total regardless of chain
         // length -- every enabled slot processes the same in-memory buffer in place,

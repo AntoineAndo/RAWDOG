@@ -95,6 +95,14 @@ public:
         setColour(juce::TextButton::textColourOffId, p.ink);
         setColour(juce::TextButton::textColourOnId, p.selectedFg);
 
+        // Otherwise defaults to stock LookAndFeel_V4's white, unreadable
+        // against this theme's light windowBg (PluginsSettingsTab's "Open
+        // plugins in a separate window" checkbox is the first real
+        // juce::ToggleButton in the app -- splitModeToggle and the
+        // Appearance tab's buttons are both juce::TextButton, already
+        // covered above).
+        setColour(juce::ToggleButton::textColourId, p.ink);
+
         setColour(juce::TextEditor::backgroundColourId, p.surface);
         setColour(juce::TextEditor::textColourId, p.ink);
         setColour(juce::TextEditor::outlineColourId, p.ink);
@@ -334,5 +342,43 @@ public:
                         ? editor.findColour(juce::TextEditor::focusedOutlineColourId)
                         : editor.findColour(juce::TextEditor::outlineColourId));
         g.drawRect(bounds, 1.0f);
+    }
+
+    // Flat sunken field, same convention as fillTextEditorBackground() above
+    // (white fill, inset shadow line along the top+left edges, hard ink
+    // border) -- replaces LookAndFeel_V4's default rounded, gradient-filled
+    // combo box, which otherwise stood out against this theme's flat 1-bit
+    // chrome. The arrow is a plain drawn triangle rather than V4's glyph, for
+    // the same reason.
+    void drawComboBox(juce::Graphics& g, int width, int height, bool /*isButtonDown*/,
+                       int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox& box) override
+    {
+        const auto& p = Palette::get();
+        auto bounds = juce::Rectangle<int>(0, 0, width, height).toFloat();
+
+        g.setColour(box.findColour(juce::ComboBox::backgroundColourId));
+        g.fillRect(bounds);
+
+        auto inner = bounds.reduced(1.0f);
+        g.setColour(p.divider);
+        g.drawLine(inner.getX(), inner.getY(), inner.getRight(), inner.getY(), 1.0f);
+        g.drawLine(inner.getX(), inner.getY(), inner.getX(), inner.getBottom(), 1.0f);
+
+        g.setColour(box.isEnabled() ? p.ink : p.inkMuted);
+        g.drawRect(bounds.reduced(0.5f), 1.0f);
+
+        const auto arrowZone = juce::Rectangle<float>((float) buttonX, (float) buttonY, (float) buttonW, (float) buttonH);
+        const auto centre = arrowZone.getCentre();
+        constexpr float arrowHalfWidth = 4.5f;
+        constexpr float arrowHeight = 4.0f;
+
+        juce::Path arrow;
+        arrow.startNewSubPath(centre.x - arrowHalfWidth, centre.y - arrowHeight * 0.5f);
+        arrow.lineTo(centre.x + arrowHalfWidth, centre.y - arrowHeight * 0.5f);
+        arrow.lineTo(centre.x, centre.y + arrowHeight * 0.5f);
+        arrow.closeSubPath();
+
+        g.setColour(box.findColour(juce::ComboBox::arrowColourId).withAlpha(box.isEnabled() ? 1.0f : 0.5f));
+        g.fillPath(arrow);
     }
 };

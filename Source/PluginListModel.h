@@ -187,7 +187,7 @@ private:
     }
 
     // Rebuilds displayRows strictly from cachedTypes (never from a separately
-    // cached "all known vendors" list) — this is what makes a
+    // cached "all known vendors" list) - this is what makes a
     // vendor with zero matches under an active search query correctly
     // produce no header row, with no extra filtering logic needed: if none of
     // its plugins survived applyFilter() into cachedTypes, it never appears in

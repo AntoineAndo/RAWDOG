@@ -7,7 +7,7 @@
 // as a single newline-joined string in a juce::ApplicationProperties-backed
 // settings file (same pattern as FavouritePluginsStore). Seeded on first-ever
 // run with PluginScanner::getUnionOfDefaultLocations() so the OS-default
-// VST3/AU folders are already in the list as regular, removable entries —
+// VST3/AU folders are already in the list as regular, removable entries -
 // not a separate hardcoded set layered underneath. Writes immediately
 // (millisecondsBeforeSaving = 0), same as every other *Store in this app.
 class PluginDirectoriesStore
@@ -23,7 +23,7 @@ public:
         options.millisecondsBeforeSaving = 0;
         appProperties.setStorageParameters(options);
 
-        // containsKey(), not "is the stored value empty" — a user who
+        // containsKey(), not "is the stored value empty" - a user who
         // deliberately removes every directory must not have the defaults
         // silently reappear on the next launch.
         if (appProperties.getUserSettings()->containsKey("pluginDirectories"))

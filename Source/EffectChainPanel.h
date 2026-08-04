@@ -7,13 +7,6 @@
 #include "ChainSlot.h"
 #include "RawdogLookAndFeel.h"
 
-namespace
-{
-    // U+2014 EM DASH -- used in the IN/OUT caps' "<label> -- <value>" text,
-    // factored out since three separate call sites need the same literal.
-    juce::String emDash() { return juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")); }
-}
-
 // The effect-chain "rack": a signal-path list read top to bottom -- an IN cap
 // (source label), one horizontal-strip row per ChainSlot with a connecting
 // line between each adjacent pair, a trailing dashed "+ Add Effect" row (not
@@ -378,17 +371,26 @@ private:
                 onClick();
         }
 
+        // Only enabled/hovering needs a repaint -- disabled rows never
+        // receive these (the mouse is over the panel's dimming wash instead,
+        // see EffectChainPanel::paintOverChildren()).
+        void mouseEnter(const juce::MouseEvent&) override { hovering = true; repaint(); }
+        void mouseExit(const juce::MouseEvent&) override { hovering = false; repaint(); }
+
         void paint(juce::Graphics& g) override
         {
             const auto& palette = RawdogLookAndFeel::Palette::get();
             const bool enabled = isEnabled();
-            const auto lineColour = enabled ? palette.inkMuted : palette.divider;
+            // Full ink (rather than the resting muted tone) is this row's
+            // only hover affordance -- it has no separate raised/pressed
+            // bevel state to lean on, unlike the real buttons elsewhere.
+            const auto lineColour = ! enabled ? palette.divider : (hovering ? palette.ink : palette.inkMuted);
             auto bounds = getLocalBounds().toFloat().reduced(1.0f);
 
             // Flatter, more uniformly muted block when disabled -- a crisp
             // white fill read as "still interactive" even with dimmed
             // border/text, matching the design mockup's disabled treatment.
-            g.setColour(enabled ? palette.surface : palette.windowBg);
+            g.setColour(! enabled ? palette.windowBg : (hovering ? palette.surface.darker(0.04f) : palette.surface));
             g.fillRect(bounds);
 
             juce::Path outline;
@@ -407,6 +409,9 @@ private:
         std::function<void()> onClick;
 
         static constexpr int rowHeight = 28;
+
+    private:
+        bool hovering = false;
     };
 
     // A short static vertical line between two adjacent rows (or between a
@@ -477,9 +482,9 @@ private:
     public:
         Content()
         {
-            inCap.label = "IN " + emDash() + " NO IMAGE"; // overwritten by setInputLabel() once a real image loads
+            inCap.label = "IN - NO IMAGE"; // overwritten by setInputLabel() once a real image loads
             addAndMakeVisible(inCap);
-            outCap.label = "OUT " + emDash() + " preview";
+            outCap.label = "OUT - preview";
             addAndMakeVisible(outCap);
         }
 
@@ -531,7 +536,7 @@ private:
 
         void setInputLabel(const juce::String& name)
         {
-            inCap.label = "IN " + emDash() + " " + name;
+            inCap.label = "IN - " + name;
             inCap.repaint();
         }
 

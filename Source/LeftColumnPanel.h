@@ -165,7 +165,7 @@ public:
     };
 
     // Tiny standalone TabbedButtonBar (not the heavier TabbedComponent, which
-    // manages separate content pages we don't need — we're filtering one shared
+    // manages separate content pages we don't need - we're filtering one shared
     // ListBox, not swapping pages) offering "All"/"Favourites" tabs.
     class PluginFilterTabs : public juce::TabbedButtonBar
     {
@@ -354,7 +354,7 @@ public:
         filterTabs.onTabChanged = [this](int newIndex) { if (onTabChanged) onTabChanged(newIndex); };
 
         // Seeded once here; only re-seeded (item 2, the panel) when a genuinely
-        // new/different editor panel is set — see setEditorPanel() — never on
+        // new/different editor panel is set - see setEditorPanel() - never on
         // every resized()/layOutComponents() call, so user drag adjustments
         // survive ordinary window resizes.
         layout.setItemLayout(0, 80, -0.7, 220);   // rack: min 80px, max 70%, preferred 220px
@@ -405,7 +405,7 @@ public:
             // Newly-opened (genuinely different) panel: re-seed just this item's
             // preferred size from the plugin's natural editor width, so each new
             // plugin gets a sensible starting split. Deliberately NOT done on every
-            // resized()/layOutComponents() call — that would reset user drag
+            // resized()/layOutComponents() call - that would reset user drag
             // adjustments on every window resize.
             if (auto* editorPanel = dynamic_cast<PluginEditorPanel*>(currentPanel))
                 layout.setItemLayout(2, 120, -1.0, (double) editorPanel->getPreferredWidth());

@@ -55,7 +55,7 @@ public:
         layout.setItemLayout(2, 80, 220, 140);
     }
 
-    // Forwarded down to WaveformSectionPanel — see its own doc comment.
+    // Forwarded down to WaveformSectionPanel - see its own doc comment.
     void updateSplitVisibility() { waveformSection.updateSplitVisibility(); }
 
     // imageSizeLabelRef's textColourId (set once in the constructor above) is
@@ -66,14 +66,18 @@ public:
         imageSizeLabelRef.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
     }
 
-    // With no image loaded there's no waveform to show at all -- the section
-    // (and its divider) is hidden entirely rather than shown empty/disabled,
-    // and the image preview fills the whole column instead.
+    // With no image loaded there's no waveform -- and no Sample Mode/size
+    // strip either, since neither means anything yet -- so both (and their
+    // dividers) are hidden entirely rather than shown empty/disabled, and the
+    // image preview fills the whole column instead.
     void setHasImage(bool hasImageIn)
     {
         hasImage = hasImageIn;
         waveformSection.setVisible(hasImage);
         resizerBar.setVisible(hasImage);
+        sampleModeLabelRef.setVisible(hasImage);
+        sampleModeComboRef.setVisible(hasImage);
+        imageSizeLabelRef.setVisible(hasImage);
         resized();
     }
 
@@ -87,9 +91,13 @@ public:
     void paint(juce::Graphics& g) override
     {
         const auto& palette = RawdogLookAndFeel::Palette::get();
-        g.setColour(palette.ink);
-        g.drawLine((float) contentBounds.getX(), (float) sampleModeStripBottom,
-                   (float) contentBounds.getRight(), (float) sampleModeStripBottom, 1.0f);
+
+        if (hasImage)
+        {
+            g.setColour(palette.ink);
+            g.drawLine((float) contentBounds.getX(), (float) sampleModeStripBottom,
+                       (float) contentBounds.getRight(), (float) sampleModeStripBottom, 1.0f);
+        }
 
         // Separates the status strip from the preview/waveform above it --
         // same hard 1px chrome-border convention as the Sample Mode strip's
@@ -120,21 +128,27 @@ public:
         statusArea.removeFromLeft(2);
         statusLabelRef.setBounds(statusArea);
 
-        // Fixed strip for the bipolar/unipolar controls, above the preview.
-        // MainComponent shows/hides this pair based on whether the plugin
-        // editor panel is open; when hidden, this strip is simply blank.
-        auto sampleModeArea = area.removeFromTop(28);
-        sampleModeStripBottom = sampleModeArea.getBottom();
-        area.removeFromTop(4);
-        sampleModeLabelRef.setBounds(sampleModeArea.removeFromLeft(90));
-        sampleModeArea.removeFromLeft(8);
-        sampleModeComboRef.setBounds(sampleModeArea.removeFromLeft(110));
+        // Fixed strip for the bipolar/unipolar controls, above the preview --
+        // not just blanked but removed from the layout entirely with no
+        // image loaded, since neither it nor the size readout means anything
+        // yet (see setHasImage()); the preview fills that reclaimed space
+        // instead of leaving it empty.
+        if (hasImage)
+        {
+            auto sampleModeArea = area.removeFromTop(28);
+            sampleModeLabelRef.setBounds(sampleModeArea.removeFromLeft(90));
+            sampleModeArea.removeFromLeft(8);
+            sampleModeComboRef.setBounds(sampleModeArea.removeFromLeft(110));
 
-        // Right-aligned "1920 x 1080 - 4.2 MB" -- the mockup's top-right
-        // dimension readout -- taking up whatever's left of this strip.
-        imageSizeLabelRef.setBounds(sampleModeArea);
+            // Right-aligned "1920 x 1080 - 4.2 MB" -- the mockup's top-right
+            // dimension readout -- taking up whatever's left of this strip.
+            imageSizeLabelRef.setBounds(sampleModeArea);
 
-        if (! hasImage)
+            area.removeFromTop(10); // padding between the dropdown row and its divider below
+            sampleModeStripBottom = area.getY();
+            area.removeFromTop(4); // gap between the divider and the content below
+        }
+        else
         {
             imagePreviewRef.setBounds(area);
             return;

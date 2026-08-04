@@ -88,9 +88,8 @@ public:
         // Format is shown here (unlike the main list) since a VST3/AU
         // duplicate pair must be visually distinguishable when both rows
         // are on screen at once.
-        static const juce::String emDash(juce::CharPointer_UTF8("\xE2\x80\x94"));
         juce::String text;
-        text << desc.name << "  " << emDash << "  " << desc.manufacturerName << "  (" << desc.pluginFormatName << ")";
+        text << desc.name << " - " << desc.manufacturerName << "  (" << desc.pluginFormatName << ")";
 
         g.setColour(textColour);
         g.drawText(text, checkboxColumnX + checkboxSize + 8, 0, width - checkboxColumnX - checkboxSize - 12, height,
@@ -154,13 +153,15 @@ private:
 
 PluginsSettingsTab::PluginsSettingsTab(PluginDirectoriesStore& directoriesStoreIn,
                                         PluginEnablementStore& enablementStoreIn,
+                                        GeneralSettingsStore& generalStoreIn,
                                         PluginScanner& scannerIn,
                                         std::function<void()> onRescanRequestedIn,
                                         std::function<void()> onEnablementChangedIn)
-    : directoriesStore(directoriesStoreIn), enablementStore(enablementStoreIn), scanner(scannerIn),
+    : directoriesStore(directoriesStoreIn), enablementStore(enablementStoreIn), generalStore(generalStoreIn),
+      scanner(scannerIn),
       onRescanRequested(std::move(onRescanRequestedIn)), onEnablementChanged(std::move(onEnablementChangedIn))
 {
-    directoriesLabel.setFont(RawdogLookAndFeel::chromeFont(11.0f));
+    directoriesLabel.setFont(RawdogLookAndFeel::chromeFont(9.5f));
     addAndMakeVisible(directoriesLabel);
 
     directoryListModel = std::make_unique<DirectoryListModel>(directoriesStore);
@@ -178,7 +179,7 @@ PluginsSettingsTab::PluginsSettingsTab(PluginDirectoriesStore& directoriesStoreI
     revertDirectoriesButton.onClick = [this] { revertDirectoriesClicked(); };
     addAndMakeVisible(revertDirectoriesButton);
 
-    pluginsLabel.setFont(RawdogLookAndFeel::chromeFont(11.0f));
+    pluginsLabel.setFont(RawdogLookAndFeel::chromeFont(9.5f));
     addAndMakeVisible(pluginsLabel);
 
     pluginSearchField.setTextToShowWhenEmpty("Search plugins...");
@@ -202,6 +203,13 @@ PluginsSettingsTab::PluginsSettingsTab(PluginDirectoriesStore& directoriesStoreI
             onRescanRequested();
     };
     addAndMakeVisible(rescanButton);
+
+    pluginWindowModeToggle.setToggleState(generalStore.isPluginWindowModeEnabled(), juce::dontSendNotification);
+    pluginWindowModeToggle.onClick = [this]
+    {
+        generalStore.setPluginWindowModeEnabled(pluginWindowModeToggle.getToggleState());
+    };
+    addAndMakeVisible(pluginWindowModeToggle);
 }
 
 PluginsSettingsTab::~PluginsSettingsTab()
@@ -297,11 +305,14 @@ void PluginsSettingsTab::updateRemoveButtonEnablement()
 
 void PluginsSettingsTab::resized()
 {
-    auto area = getLocalBounds().reduced(12);
+    auto area = getLocalBounds().reduced(16);
 
-    directoriesLabel.setBounds(area.removeFromTop(20));
+    directoriesLabel.setBounds(area.removeFromTop(16));
+    directoriesHeaderDividerY = area.getY() + 4;
+    area.removeFromTop(10);
+
     directoryListBox.setBounds(area.removeFromTop(110));
-    area.removeFromTop(4);
+    area.removeFromTop(8);
 
     auto directoryButtonRow = area.removeFromTop(28);
     addDirectoryButton.setBounds(directoryButtonRow.removeFromLeft(130));
@@ -310,15 +321,40 @@ void PluginsSettingsTab::resized()
     directoryButtonRow.removeFromLeft(8);
     revertDirectoriesButton.setBounds(directoryButtonRow.removeFromLeft(140));
 
-    area.removeFromTop(16);
+    area.removeFromTop(18); // section gap -- wider than the gaps within a section
 
-    pluginsLabel.setBounds(area.removeFromTop(20));
-    area.removeFromTop(4);
+    pluginsLabel.setBounds(area.removeFromTop(16));
+    pluginsHeaderDividerY = area.getY() + 4;
+    area.removeFromTop(10);
+
     pluginSearchField.setBounds(area.removeFromTop(28));
-    area.removeFromTop(4);
+    area.removeFromTop(8);
+
+    // Its own section below the plugin list/rescan action -- a general
+    // app-behavior option, not something specific to "installed plugins", so
+    // it gets a divider of its own rather than sharing the rescan row.
+    auto toggleRow = area.removeFromBottom(24);
+    windowModeDividerY = toggleRow.getY() - 10;
+    area.removeFromBottom(20); // gap + divider space above the toggle row
 
     auto rescanRow = area.removeFromBottom(28);
-    pluginChecklistBox.setBounds(area.reduced(0, 4));
+    rescanDividerY = rescanRow.getY() - 6;
+    area.removeFromBottom(12); // gap + divider space above the rescan row
+
+    pluginChecklistBox.setBounds(area);
 
     rescanButton.setBounds(rescanRow.removeFromLeft(150));
+    pluginWindowModeToggle.setBounds(toggleRow);
+}
+
+void PluginsSettingsTab::paint(juce::Graphics& g)
+{
+    const auto& palette = RawdogLookAndFeel::Palette::get();
+    const auto area = getLocalBounds().reduced(16);
+
+    g.setColour(palette.divider);
+    g.drawHorizontalLine(directoriesHeaderDividerY, (float) area.getX(), (float) area.getRight());
+    g.drawHorizontalLine(pluginsHeaderDividerY, (float) area.getX(), (float) area.getRight());
+    g.drawHorizontalLine(rescanDividerY, (float) area.getX(), (float) area.getRight());
+    g.drawHorizontalLine(windowModeDividerY, (float) area.getX(), (float) area.getRight());
 }

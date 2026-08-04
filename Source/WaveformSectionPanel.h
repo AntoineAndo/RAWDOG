@@ -4,11 +4,6 @@
 #include "RawdogLookAndFeel.h"
 #include "WaveformSplitPanel.h"
 
-namespace
-{
-    juce::String emDashChar() { return juce::String(juce::CharPointer_UTF8("\xE2\x80\x94")); }
-}
-
 // Fixed-pixel waveform sub-layout: a filled toolbar strip, then waveform view
 // + horizontal scrollbar row, scoped to this panel's local coordinates (not a
 // user-resizable split). Also lays out the split-channel toggle button and
@@ -50,7 +45,7 @@ public:
     }
 
     // Called by MainComponent (via RightColumnPanel's forwarding method)
-    // whenever splitModeToggle's state may have changed — reads the toggle's
+    // whenever splitModeToggle's state may have changed - reads the toggle's
     // current state and swaps which of waveformViewRef/splitPanel is shown.
     void updateSplitVisibility()
     {
@@ -59,7 +54,7 @@ public:
         splitPanel.setVisible(split);
 
         // "A" only shown when this image has a real alpha lane.
-        modeLabel.setText(split ? juce::String("SPLIT ") + emDashChar() + " R / G / B"
+        modeLabel.setText(split ? juce::String("SPLIT - R / G / B")
                                     + (splitPanel.hasVisibleAlphaLane() ? " / A" : "")
                                  : "RGB INTERLEAVED",
                            juce::dontSendNotification);

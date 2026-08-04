@@ -2,7 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 // Same "~/Library/Application Support/RAWDOG/" folder FavouritePluginsStore
-// writes its settings file into — a sibling file there keeps all of this app's
+// writes its settings file into - a sibling file there keeps all of this app's
 // persisted state in one place.
 static juce::File getRawdogSupportFolder()
 {
@@ -16,7 +16,7 @@ static juce::File getRawdogSupportFolder()
 // once the probe returns safely. If this process crashes mid-scan (as some
 // third-party plugins are known to do), the *next* scanner constructed with
 // this same file sees the still-present entry, treats that plugin as a known
-// crasher, and skips it — turning what would otherwise be an infinite
+// crasher, and skips it - turning what would otherwise be an infinite
 // crash-on-rescan loop into a one-time loss of that single plugin.
 static juce::File getDeadMansPedalFile()
 {
@@ -30,7 +30,7 @@ static juce::File getDeadMansPedalFile()
 // use it rather than hand-rolling a DialogWindow. launchThread() (as opposed
 // to the JUCE_MODAL_LOOPS_PERMITTED-gated runThread()) starts the scan and
 // returns immediately, calling threadComplete() on the message thread once
-// the scan finishes or is cancelled — so the message loop (and menu bar)
+// the scan finishes or is cancelled - so the message loop (and menu bar)
 // keeps pumping the whole time.
 class PluginScanner::ScanThread : public juce::ThreadWithProgressWindow
 {
@@ -50,7 +50,7 @@ public:
     void run() override
     {
         // PluginDirectoryScanner's own getFailedFiles() only reports files
-        // that were probed but yielded zero plugin types — it deliberately
+        // that were probed but yielded zero plugin types - it deliberately
         // excludes dead man's pedal skips (those are recorded as blacklist
         // entries on knownPluginList instead, before the probe even starts).
         // So the only way to find out which plugins were skipped as known
@@ -105,7 +105,7 @@ private:
     // since either format works equally well here. Both entries stay in
     // knownPluginList (the Settings plugin list needs to show both), but the
     // AU side of an actual duplicate is recorded here so the caller can
-    // default it to disabled the first time it's seen — VST3 is the
+    // default it to disabled the first time it's seen - VST3 is the
     // preferred copy. A plugin that exists in just one format (VST3-only or
     // AU-only) is untouched either way.
     void computeDuplicateAudioUnits()
@@ -131,7 +131,7 @@ private:
 
 PluginScanner::PluginScanner()
 {
-    // Both VST3 and AU are scanned — some plugins ship only as one or the
+    // Both VST3 and AU are scanned - some plugins ship only as one or the
     // other. When a plugin ships as both, ScanThread::computeDuplicateAudioUnits()
     // reports the AU copy as a duplicate so the caller can default it to
     // disabled, keeping VST3 as the preferred format shown by default rather

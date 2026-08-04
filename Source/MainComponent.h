@@ -10,6 +10,7 @@
 #include "EffectChainPanel.h"
 #include "ExportSettingsStore.h"
 #include "FavouritePluginsStore.h"
+#include "GeneralSettingsStore.h"
 #include "GrippedResizerBar.h"
 #include "HeaderEditorPanel.h"
 #include "LeftColumnPanel.h"
@@ -18,6 +19,7 @@
 #include "ParameterAutomation.h"
 #include "PluginDirectoriesStore.h"
 #include "PluginEditorPanel.h"
+#include "PluginEditorWindow.h"
 #include "PluginEnablementStore.h"
 #include "PluginListModel.h"
 #include "PluginParameterWatcher.h"
@@ -59,25 +61,25 @@ private:
     {
         undoCommand = 1000,
         redoCommand,
-        cancelEditorCommand, // Escape — cancels whichever of pluginEditorPanel/
+        cancelEditorCommand, // Escape - cancels whichever of pluginEditorPanel/
                             // headerEditorPanel is currently open, not shown
                             // in any menu (keyboard-only, mirroring each
                             // panel's own Cancel button)
-        loadImageCommand, // Cmd+O — File > Load Image... is itself this command
+        loadImageCommand, // Cmd+O - File > Load Image... is itself this command
                           // item (added via menu.addCommandItem() in
                           // menuModel's populateFileMenuLoadImageItem callback
                           // below), same treatment as undoCommand/redoCommand,
                           // so the shortcut appears next to the menu item too.
-        resetCommand, // Cmd+Shift+R — same command-item treatment as
+        resetCommand, // Cmd+Shift+R - same command-item treatment as
                       // loadImageCommand above, via populateFileMenuResetItem.
-        exportImageCommand, // Cmd+S — same command-item treatment again, via
+        exportImageCommand, // Cmd+S - same command-item treatment again, via
                            // populateFileMenuExportItem.
-        openSettingsCommand, // Cmd+, — backs the "Settings..." item added to
+        openSettingsCommand, // Cmd+, - backs the "Settings..." item added to
                             // the native "RAWDOG" app menu itself (see the
                             // extraAppleMenu built around setMacMainMenu() in
                             // the constructor), not the File/Edit menu bar.
         aboutCommand // Backs the "About RAWDOG" item in that same
-                     // extraAppleMenu, above Settings — see the constructor.
+                     // extraAppleMenu, above Settings - see the constructor.
     };
 
     void refreshPluginList();
@@ -243,7 +245,7 @@ private:
     // (re)computes the channel planes (cheap if already up to date, per
     // RawImage's own dirty-flag caching) and populates the 3 or 4 lanes that
     // apply; leaving it clears the per-channel selection-tracking state.
-    // Does not touch pixelBytes/headerBytes — purely a view/selection-
+    // Does not touch pixelBytes/headerBytes - purely a view/selection-
     // tracking concern.
     void setSplitMode(bool enabled);
 
@@ -255,14 +257,14 @@ private:
 
     // Whichever waveform view currently drives the shared horizontal
     // scrollbar/zoom sync: channelWaveformViews[0] in split mode (arbitrary
-    // but consistent — all 3 lanes share the same sample count), waveformView
+    // but consistent - all 3 lanes share the same sample count), waveformView
     // otherwise.
     WaveformView& primaryWaveformView();
 
     void scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
 
     // Coalesces WaveformView::onSelectionChanged, which fires on every mouse-move
-    // frame of a selection drag — without this, dragging a selection while a
+    // frame of a selection drag - without this, dragging a selection while a
     // plugin panel is open would re-run the plugin's (potentially multi-second)
     // processing once per mouse-move event instead of once per event-loop turn.
     // Same debounce idiom PluginParameterWatcher already uses for parameter bursts.
@@ -316,6 +318,7 @@ private:
     PluginDirectoriesStore pluginDirectoriesStore;
     PluginEnablementStore pluginEnablementStore;
     AppearanceSettingsStore appearanceSettingsStore;
+    GeneralSettingsStore generalSettingsStore;
     PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore, pluginEnablementStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
@@ -347,7 +350,7 @@ private:
     juce::StretchableLayoutManager outerLayout;
     GrippedResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
 
-    // Declared before pluginChain so it destructs (and detaches) first —
+    // Declared before pluginChain so it destructs (and detaches) first -
     // member destruction order is the reverse of declaration order. Stays a
     // single instance, re-attachTo()'d to whichever chain slot is currently
     // selected/mounted -- only the selected slot ever has a live native
@@ -390,13 +393,22 @@ private:
 
     std::unique_ptr<PluginEditorPanel> pluginEditorPanel;
 
+    // Non-null only while pluginEditorPanel is both non-null AND
+    // GeneralSettingsStore::isPluginWindowModeEnabled() was true the moment
+    // it was mounted (see selectChainSlot()) -- pluginEditorPanel itself
+    // stays the sole owner of the actual juce::AudioProcessorEditor either
+    // way, so every existing pluginEditorPanel != nullptr gate (Escape-key
+    // cancel, ramps read-back, etc.) keeps working unchanged regardless of
+    // which of the two presentations is currently showing it.
+    std::unique_ptr<PluginEditorWindow> pluginEditorWindow;
+
     // While headerEditorPanel is open, headerEditScratch is a scratch copy of
-    // workingImage that every field edit is applied to for live preview —
+    // workingImage that every field edit is applied to for live preview -
     // workingImage itself is only touched by applyHeaderEditClicked().
     std::unique_ptr<RawImage> headerEditScratch;
     std::unique_ptr<HeaderEditorPanel> headerEditorPanel;
 
-    // Lazily created on the first "Settings..." click and reused after —
+    // Lazily created on the first "Settings..." click and reused after -
     // openSettingsClicked() just re-shows/refronts it rather than recreating.
     std::unique_ptr<SettingsWindow> settingsWindow;
 
@@ -440,7 +452,7 @@ private:
     // tracks which of the two "edited source" fields below is the current
     // one: livePreviewChannelPlaneBytes (an edited channel plane, when
     // scoped) or livePreviewVisualOrderBytes (the edited whole visual-order
-    // buffer, otherwise) — whichever applies is what endLivePreviewSession()
+    // buffer, otherwise) - whichever applies is what endLivePreviewSession()
     // splices back via applyChannelBytes() or applyVisualOrderedBytes()
     // respectively, instead of a full setPixelBytes(). (The rendered juce::Image
     // and waveform float buffer built from these bytes aren't cached here:
@@ -465,7 +477,7 @@ private:
     std::array<std::shared_ptr<const juce::MemoryBlock>, 4> cachedChannelSource;
 
     // Tracks which channel lane (if any) currently owns the live selection
-    // while split mode is on — only one lane has an active selection at a
+    // while split mode is on - only one lane has an active selection at a
     // time; starting a new one in a different lane clears the others.
     std::optional<RawImage::Channel> activeSelectionChannel;
 

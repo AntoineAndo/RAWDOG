@@ -41,7 +41,7 @@ void WaveformView::setBuffer(juce::AudioBuffer<float> newBuffer, bool resetView,
         viewStartSample = juce::jlimit(0, juce::jmax(0, waveformData.getNumSamples() - viewLengthSamples), viewStartSample);
 
         // The selection range is independent of the view range above, so it
-        // needs its own re-clamp against the new buffer's sample count — a
+        // needs its own re-clamp against the new buffer's sample count - a
         // stale selection could otherwise point past the end of a shorter
         // buffer (e.g. after Apply changes the sample count).
         if (hasSelection)
@@ -245,7 +245,7 @@ void WaveformView::ensureCachedTraceUpToDate()
     const int numSamples = waveformData.getNumSamples();
 
     // bipolar: centred on midY, samples range [-1,1]. unipolar: anchored at
-    // the bottom, samples range [0,1] — using the full lane height instead of
+    // the bottom, samples range [0,1] - using the full lane height instead of
     // only the top half, since byte 0 (silence) is a genuine floor, not one
     // of two symmetric extremes.
     const bool bipolar = sampleMode == SampleFormat::Mode::bipolar;
@@ -360,8 +360,8 @@ void WaveformView::mouseDrag(const juce::MouseEvent& e)
         case DragMode::resizingLeft:
         {
             // jmax guards against an inverted jlimit range when the anchor sits at (or
-            // near) sample 0 — e.g. resizing a degenerate zero-length selection created
-            // by a plain click with no drag — which would otherwise push selectionStartSample
+            // near) sample 0 - e.g. resizing a degenerate zero-length selection created
+            // by a plain click with no drag - which would otherwise push selectionStartSample
             // negative and corrupt any later byte-range copy off the raw buffer.
             const int upperBound = juce::jmax(0, dragAnchorSample - 1);
             const int newLeft = juce::jlimit(0, upperBound, xToSample(e.x));

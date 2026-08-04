@@ -5,7 +5,7 @@
 // Implements the native macOS File/Edit menu bar for MainComponent, decoupled
 // from MainComponent's own state via a small set of query/action callbacks.
 // MainComponent still owns undo/redo as ApplicationCommandTarget commands (they're
-// entangled with its undo stack), so this class doesn't know the command IDs —
+// entangled with its undo stack), so this class doesn't know the command IDs -
 // it just calls populateEditMenu so MainComponent can add its own command items.
 class MainMenuModel : public juce::MenuBarModel
 {

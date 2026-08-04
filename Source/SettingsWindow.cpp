@@ -4,12 +4,13 @@
 SettingsWindow::Content::Content(PluginDirectoriesStore& directoriesStore,
                                   PluginEnablementStore& enablementStore,
                                   AppearanceSettingsStore& appearanceStore,
+                                  GeneralSettingsStore& generalStore,
                                   PluginScanner& scanner,
                                   std::function<void()> onRescanRequested,
                                   std::function<void()> onEnablementChanged,
                                   std::function<void()> onAppearanceChanged,
                                   std::function<void()> onOkClicked)
-    : pluginsTab(directoriesStore, enablementStore, scanner, std::move(onRescanRequested), std::move(onEnablementChanged)),
+    : pluginsTab(directoriesStore, enablementStore, generalStore, scanner, std::move(onRescanRequested), std::move(onEnablementChanged)),
       appearanceTab(appearanceStore, std::move(onAppearanceChanged))
 {
     addAndMakeVisible(tabs);
@@ -40,6 +41,7 @@ void SettingsWindow::Content::lookAndFeelChanged()
 SettingsWindow::SettingsWindow(PluginDirectoriesStore& directoriesStore,
                                 PluginEnablementStore& enablementStore,
                                 AppearanceSettingsStore& appearanceStore,
+                                GeneralSettingsStore& generalStore,
                                 PluginScanner& scanner,
                                 std::function<void()> onRescanRequested,
                                 std::function<void()> onEnablementChanged,
@@ -47,19 +49,24 @@ SettingsWindow::SettingsWindow(PluginDirectoriesStore& directoriesStore,
     : DocumentWindow("Settings",
                       RawdogLookAndFeel::Palette::get().windowBg,
                       DocumentWindow::closeButton),
-      content(directoriesStore, enablementStore, appearanceStore, scanner,
+      content(directoriesStore, enablementStore, appearanceStore, generalStore, scanner,
               std::move(onRescanRequested), std::move(onEnablementChanged), std::move(onAppearanceChanged),
               [this] { setVisible(false); })
 {
     setUsingNativeTitleBar(true);
     setResizable(true, true);
-    setResizeLimits(420, 420, 900, 900);
+    // Height floor raised from the width floor's 420 to 560 -- below that,
+    // PluginsSettingsTab's plugin checklist (the only element that actually
+    // grows/shrinks with the window) is squeezed to under a couple of
+    // visible rows once its section headers/dividers/rescan/window-mode rows
+    // are all accounted for.
+    setResizeLimits(420, 560, 900, 900);
 
     // content is a member, not heap-allocated -- setContentOwned() would have
     // DocumentWindow's destructor try to delete it, double-freeing.
     setContentNonOwned(&content, true);
 
-    centreWithSize(520, 480);
+    centreWithSize(520, 560);
 }
 
 void SettingsWindow::lookAndFeelChanged()

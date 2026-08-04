@@ -15,7 +15,7 @@ public:
         juce::String& errorMessage);
 
     // beforeBlock, when supplied, is called with each block's starting sample
-    // offset (0-based within monoBuffer) right before that block is processed —
+    // offset (0-based within monoBuffer) right before that block is processed -
     // lets a caller sweep parameter values across the buffer (e.g. a fade)
     // instead of holding them static for the whole pass.
     static void processWholeBuffer(juce::AudioPluginInstance& plugin,

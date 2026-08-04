@@ -223,7 +223,7 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
     if ((isPalette || is32Bitfields) && readU32LE(bytes + 14) != 40)
     {
         errorMessage = "This BMP uses a DIB header variant (V4/V5, " + juce::String(readU32LE(bytes + 14))
-                       + " bytes) not supported for non-24bpp conversion — only the classic 40-byte "
+                       + " bytes) not supported for non-24bpp conversion - only the classic 40-byte "
                          "BITMAPINFOHEADER is supported.";
         return nullptr;
     }
@@ -316,8 +316,8 @@ std::unique_ptr<RawImage> RawImage::loadBmp(const juce::File& file, juce::String
     {
         // BI_BITFIELDS: three (R, G, B order) DWORD channel masks stored
         // immediately after the 40-byte DIB header. Extract each channel
-        // generally — shift by the mask's lowest set bit, width from its
-        // popcount — then normalise to 8 bits (don't assume byte-aligned masks).
+        // generally - shift by the mask's lowest set bit, width from its
+        // popcount - then normalise to 8 bits (don't assume byte-aligned masks).
         const uint32_t biSize    = readU32LE(bytes + 14);
         const int64_t  maskStart = 14 + (int64_t) biSize;
 
@@ -644,14 +644,14 @@ RawImage::HeaderEditResult RawImage::validateBmpHeaderFields(const BmpEditableHe
 
     if (candidate.bfOffBits < minimumBmpHeaderSize)
         result.blockingErrors.add("Pixel data offset must be at least " + juce::String((int) minimumBmpHeaderSize)
-                                   + " bytes (the full BMP header) — this app is about to serialise a full header back into that space.");
+                                   + " bytes (the full BMP header) - this app is about to serialise a full header back into that space.");
     else if ((int64_t) candidate.bfOffBits >= totalContentSize)
         result.blockingErrors.add("Pixel data offset is past the end of the file.");
     else
     {
         // Warning-only: this app's own renderer already soft-clips out-of-range
         // byte offsets to black rather than crashing, so a header that declares
-        // more pixel data than actually exists degrades gracefully — flag it,
+        // more pixel data than actually exists degrades gracefully - flag it,
         // don't block it.
         const int derivedChannels = juce::jmax(1, candidate.biBitCount / 8);
         const int64_t rowStride64 = computeBmpRowStride(candidate.biWidth, derivedChannels);
@@ -661,17 +661,17 @@ RawImage::HeaderEditResult RawImage::validateBmpHeaderFields(const BmpEditableHe
 
         if (declaredPixelSize > availableAfterOffset)
             result.warnings.add("Declared pixel data (" + juce::String(declaredPixelSize) + " bytes) exceeds what's "
-                                 "actually available (" + juce::String(availableAfterOffset) + ") — the image will "
+                                 "actually available (" + juce::String(availableAfterOffset) + ") - the image will "
                                  "render with black regions past the available bytes.");
     }
 
     if (candidate.biBitCount != 24)
-        result.warnings.add("Bit depth " + juce::String(candidate.biBitCount) + " is not 24-bit — this app doesn't "
+        result.warnings.add("Bit depth " + juce::String(candidate.biBitCount) + " is not 24-bit - this app doesn't "
                              "actually decode other bit depths, so the render will look wrong (glitch, not a crash).");
 
     if (candidate.biCompression != 0)
         result.warnings.add("Compression " + juce::String(candidate.biCompression) + " is not BI_RGB (uncompressed) "
-                             "— this app doesn't decode compressed pixel data, so the raw bytes will render as noise.");
+                             "- this app doesn't decode compressed pixel data, so the raw bytes will render as noise.");
 
     result.ok = result.blockingErrors.isEmpty();
     return result;
@@ -953,7 +953,7 @@ void RawImage::applyVisualOrderedBytes(const juce::MemoryBlock& newVisualOrderBy
     // Unlike applyChannelBytes()'s direct cache update, don't trust
     // newVisualOrderBytes verbatim as the new cache: if pixelBytes is shorter
     // than width*height*channels (the header editor's own tolerated "declared
-    // pixel data exceeds available bytes" case — see validateBmpHeaderFields()),
+    // pixel data exceeds available bytes" case - see validateBmpHeaderFields()),
     // the splice above silently drops whatever didn't fit, so the cache must
     // reflect that truncation rather than the possibly-larger input buffer.
     // Recomputing from the just-written pixelBytes guarantees that.

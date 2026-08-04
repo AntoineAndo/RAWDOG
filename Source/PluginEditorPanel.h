@@ -60,13 +60,19 @@ public:
 
     int getPreferredWidth() const { return editor->getWidth(); }
 
+    // Editor height plus the top strip (mode tabs/Save/OK) above it -- the
+    // rest of resized() below gives the editor/automation view every pixel
+    // that strip doesn't take, so this is exactly the height a container
+    // needs to show the editor at its own natural size with no scrolling.
+    int getPreferredHeight() const { return editor->getHeight() + topStripHeight; }
+
     const std::vector<ParameterAutomation>& getParameterRamps() const { return automationPanel.getRamps(); }
 
     void resized() override
     {
         auto area = getLocalBounds();
 
-        auto topStrip = area.removeFromTop(32).reduced(4);
+        auto topStrip = area.removeFromTop(topStripHeight).reduced(4);
         auto buttonArea = topStrip.removeFromRight(184);
         okButton.setBounds(buttonArea.removeFromRight(76).reduced(2, 0));
         savePresetButton.setBounds(buttonArea.reduced(2, 0));
@@ -105,6 +111,8 @@ private:
         viewport.setVisible(showEditor);
         automationPanel.setVisible(! showEditor);
     }
+
+    static constexpr int topStripHeight = 32;
 
     std::unique_ptr<juce::AudioProcessorEditor> editor;
     juce::Viewport viewport;
