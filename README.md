@@ -6,34 +6,33 @@ An image editing tool to databend image files with audio VST3 plugins
 
 
 
-# Features  
-## ✂️ Selective glitching 
+## Features  
+### ✂️ Selective glitching 
 Select a range on the waveform to modify just part of the image and leave the rest untouched
 
 <img width="300" height="280" alt="laser png" src="https://github.com/user-attachments/assets/7f35ab54-0e2d-4837-b79c-c50fe8e75ca9" />
 
-## 🔗 Effect chaining
+### 🔗 Effect chaining
 Use and tweak multiple effects at the same time
 
 <img width="323" height="222" alt="image" src="https://github.com/user-attachments/assets/ec373411-4cec-4bf9-a3f6-23a3051893a9" />
 
 
-## 🌈 Per-channel editing
+### 🌈 Per-channel editing
 Split into R/G/B/A lanes and process each one independently
  
 <img width="300" height="280" alt="image" src="https://github.com/user-attachments/assets/ffb39757-ecc0-44ed-aff5-58f0a0ac6891" />
 
 
-## 🎚️Parameter fading 
+### 🎚️ Parameter fading 
 Ramp a plugin parameter across the selection instead of setting it static
 
 <img width="930" height="401" alt="image" src="https://github.com/user-attachments/assets/a5cf238d-aad9-461c-a176-fef3ed5f9637" />
 
-
-- ↩️ **Undo/redo**
-- 🎛️ **Works with VST3 and AU plugins** 
-- 📷 **Supports JPEG, PNG, BMP, PNM, RAF and DNG**
-- 🖼️ **Exports to PNG**
+### ↩️ Undo/redo
+### 🎛️ Works with VST3 and AU plugins
+### 📷 Supports JPEG, PNG, BMP, PNM, RAF and DNG
+### 🖼️ Exports to PNG
 
 ## Requirements
 
