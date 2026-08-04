@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "RawdogLookAndFeel.h"
 
 // Purely presentational: stacks the channel waveform lanes vertically with a
 // small colour-coded label identifying each. Holds no selection/business
@@ -37,6 +38,36 @@ public:
     // image actually has an alpha lane -- avoids threading a 5th reference
     // through just to answer this one question.
     bool hasVisibleAlphaLane() const { return alphaView.isVisible(); }
+
+    // Each lane fills its own bounds edge-to-edge with an opaque background
+    // (see WaveformView::renderCache()), so without an explicit seam between
+    // them, adjacent lanes read as one continuous waveform rather than four
+    // separate channels -- draws a hard 1px line at the top of every lane
+    // after the first (using each view's own already-laid-out bounds, not a
+    // separately cached list), matching the bold ink-coloured divider
+    // convention used elsewhere (RightColumnPanel, WaveformSectionPanel's
+    // outer frame) rather than the softer "divider" tone. Drawn in
+    // paintOverChildren(), not paint() -- each view's own opaque fill starts
+    // right at this same Y coordinate and would otherwise paint over (erase)
+    // a line drawn underneath it.
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        g.setColour(RawdogLookAndFeel::Palette::get().ink);
+
+        juce::Component* views[] = { &redView, &greenView, &blueView, &alphaView };
+        bool drewFirstLane = false;
+
+        for (auto* view : views)
+        {
+            if (! view->isVisible())
+                continue;
+
+            if (drewFirstLane)
+                g.drawLine(0.0f, (float) view->getY(), (float) getWidth(), (float) view->getY(), 1.0f);
+
+            drewFirstLane = true;
+        }
+    }
 
     void resized() override
     {
