@@ -36,6 +36,16 @@ public:
     void setHighlightRegion(std::optional<juce::Range<int>> imageRowRange, juce::Colour colour);
 
     void paint(juce::Graphics& g) override;
+
+    // The cached render bakes in the active palette's colours (the dot-mat
+    // background, the empty-state card, etc.) -- without this,
+    // RawdogLookAndFeel::refreshAllWindows() (a light/dark theme switch)
+    // would repaint this component but just re-blit the stale pre-switch
+    // image, leaving it showing the old theme until something else (a
+    // resize, a new image) happened to invalidate the cache for an unrelated
+    // reason.
+    void lookAndFeelChanged() override { invalidateCachedRender(); repaint(); }
+
     void resized() override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;

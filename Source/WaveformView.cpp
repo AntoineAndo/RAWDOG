@@ -189,33 +189,73 @@ void WaveformView::paint(juce::Graphics& g)
     ensureCachedTraceUpToDate();
     g.drawImageAt(cachedTrace, 0, 0);
 
+    const float height = (float) getHeight();
+
     if (hasSelection)
     {
         const auto& palette = RawdogLookAndFeel::Palette::get();
-        const float height = (float) getHeight();
         const float x1 = (float) sampleToX(juce::jmin(selectionStartSample, selectionEndSample));
         const float x2 = (float) sampleToX(juce::jmax(selectionStartSample, selectionEndSample));
-        auto selectionRect = juce::Rectangle<float>(x1, 0.0f, x2 - x1, height);
 
         g.setColour(palette.ink.withAlpha(0.15f));
-        g.fillRect(selectionRect);
-        g.setColour(palette.ink);
-        g.drawRect(selectionRect, 1.0f);
+        g.fillRect(juce::Rectangle<float>(x1, 0.0f, x2 - x1, height));
 
-        // White grip handles (with a thin black outline so they stay visible
-        // against the waveform lane) at each edge.
-        constexpr float pillLength = 28.0f, pillThickness = 5.0f;
-        const float cy = height * 0.5f;
+        // One rectangle, not two separate edge marks: every side is the same
+        // surface-coloured border (dragging out a brand new selection pins
+        // the start side at mouseDown and drags the end side with the cursor
+        // -- see mouseDown()/mouseDrag()). The top/bottom get the same
+        // high-contrast bar treatment as the hover indicator below (just
+        // horizontal), so the boundary stays visible against the trace
+        // regardless of what's directly behind it.
+        g.setColour(palette.surface);
+        g.drawLine(x1, 0.0f, x1, height, 1.0f);
+        g.drawLine(x2, 0.0f, x2, height, 1.0f);
 
-        for (const float x : { x1, x2 })
-        {
-            auto pill = juce::Rectangle<float>(pillThickness, pillLength).withCentre({ x, cy });
-            g.setColour(juce::Colours::white);
-            g.fillRoundedRectangle(pill, pillThickness * 0.5f);
-            g.setColour(palette.ink);
-            g.drawRoundedRectangle(pill, pillThickness * 0.5f, 1.0f);
-        }
+        drawContrastBarHorizontal(g, x1, x2, 0.0f, false);
+        drawContrastBarHorizontal(g, x1, x2, height, true);
     }
+
+    // Playhead-style hover indicator. Suppressed while actively dragging a
+    // selection edge/body: mouseDrag() doesn't refresh hoverX (only
+    // mouseMove() does), so it would otherwise sit stale at wherever the drag
+    // began while the live edge bars above already track the cursor.
+    if (hoverX >= 0 && isEnabled() && dragMode == DragMode::none)
+        drawContrastBar(g, (float) hoverX, height);
+}
+
+// A plain 1px ink line nearly disappeared wherever it crossed the trace's own
+// ink-coloured peaks, so this is a solid surface-coloured (white, in the
+// light theme) bar instead -- a few pixels wide so it reads clearly as a
+// highlight directly on top of the waveform regardless of what's underneath.
+// Deliberately a single flat fill, not an outlined shape: an outline drawn
+// around a bar this thin just leaves a razor-thin sliver of fill in the
+// middle, reading as two parallel lines rather than one solid bar. Shared by
+// the hover indicator and the selection rectangle's top/bottom edges below,
+// so hovering and an active selection read as the same visual language
+// rather than two different ones.
+void WaveformView::drawContrastBar(juce::Graphics& g, float x, float height) const
+{
+    constexpr float barThickness = 3.0f;
+    g.setColour(RawdogLookAndFeel::Palette::get().surface);
+    g.fillRect(juce::Rectangle<float>(barThickness, height).withCentre({ x, height * 0.5f }));
+}
+
+// Same shape as drawContrastBar() above, rotated 90 degrees -- used for the
+// selection rectangle's top/bottom edges.
+// edgeY/atBottomEdge: the bar is positioned fully inside [0, height] against
+// that edge (never centred exactly on it) -- centring a bar with real
+// thickness directly on y == 0 or y == height would clip half of it outside
+// the component, making it look like a thinner, offset sliver rather than a
+// clean bar sitting flush against the edge.
+void WaveformView::drawContrastBarHorizontal(juce::Graphics& g, float x1, float x2, float edgeY, bool atBottomEdge) const
+{
+    constexpr float barThickness = 3.0f;
+    auto bar = atBottomEdge
+        ? juce::Rectangle<float>(x1, edgeY - barThickness, x2 - x1, barThickness)
+        : juce::Rectangle<float>(x1, edgeY, x2 - x1, barThickness);
+
+    g.setColour(RawdogLookAndFeel::Palette::get().surface);
+    g.fillRect(bar);
 }
 
 void WaveformView::ensureCachedTraceUpToDate()
@@ -448,9 +488,22 @@ void WaveformView::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
 
 void WaveformView::mouseMove(const juce::MouseEvent& e)
 {
-    if (! hasSelection)
+    if (! isEnabled())
     {
         setMouseCursor(juce::MouseCursor::NormalCursor);
+        hoverX = -1;
+        repaint();
+        return;
+    }
+
+    hoverX = e.x;
+    repaint();
+
+    if (! hasSelection)
+    {
+        // Pointer, not the plain arrow -- this whole lane is a click-drag
+        // target for creating a new selection, not just inert display.
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
         return;
     }
 
@@ -462,5 +515,11 @@ void WaveformView::mouseMove(const juce::MouseEvent& e)
     else if (e.x > leftX && e.x < rightX)
         setMouseCursor(juce::MouseCursor::DraggingHandCursor);
     else
-        setMouseCursor(juce::MouseCursor::NormalCursor);
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
+
+void WaveformView::mouseExit(const juce::MouseEvent&)
+{
+    hoverX = -1;
+    repaint();
 }

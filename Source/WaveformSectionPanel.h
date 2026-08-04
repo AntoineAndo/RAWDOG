@@ -19,15 +19,17 @@ public:
                          juce::Component& horizontalScrollBarIn,
                          juce::Component& redWaveformIn, juce::Component& greenWaveformIn,
                          juce::Component& blueWaveformIn, juce::Component& alphaWaveformIn,
-                         juce::Button& splitToggleIn)
+                         juce::Button& splitToggleIn, juce::Button& deselectButtonIn)
         : waveformViewRef(waveformViewIn),
           horizontalScrollBarRef(horizontalScrollBarIn),
-          splitPanel(redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn), splitToggleRef(splitToggleIn)
+          splitPanel(redWaveformIn, greenWaveformIn, blueWaveformIn, alphaWaveformIn), splitToggleRef(splitToggleIn),
+          deselectButtonRef(deselectButtonIn)
     {
         addAndMakeVisible(waveformViewRef);
         addAndMakeVisible(splitPanel);
         addAndMakeVisible(horizontalScrollBarRef);
         addAndMakeVisible(splitToggleRef);
+        addAndMakeVisible(deselectButtonRef);
 
         modeLabel.setFont(RawdogLookAndFeel::chromeFont(8.0f));
         modeLabel.setColour(juce::Label::textColourId, RawdogLookAndFeel::Palette::get().inkMuted);
@@ -90,6 +92,8 @@ public:
         auto toolbar = toolbarBounds.reduced(hPadding, 6);
         splitToggleRef.setBounds(toolbar.removeFromLeft(84));
         toolbar.removeFromLeft(8);
+        deselectButtonRef.setBounds(toolbar.removeFromLeft(76));
+        toolbar.removeFromLeft(8);
         modeLabel.setBounds(toolbar);
 
         area.removeFromTop(6); 
@@ -112,5 +116,6 @@ private:
     juce::Component& horizontalScrollBarRef;
     WaveformSplitPanel splitPanel;
     juce::Button& splitToggleRef;
+    juce::Button& deselectButtonRef;
     juce::Label modeLabel;
 };

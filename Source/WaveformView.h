@@ -92,10 +92,18 @@ public:
     // must be explicitly invalidated here.
     void enablementChanged() override { invalidateCachedTrace(); repaint(); }
 
+    // The cached trace bakes in the active palette's colours -- without this,
+    // RawdogLookAndFeel::refreshAllWindows() (a light/dark theme switch)
+    // would repaint this component but just re-blit the stale pre-switch
+    // image, leaving it showing the old theme until something else (a resize,
+    // a new buffer) happened to invalidate the cache for an unrelated reason.
+    void lookAndFeelChanged() override { invalidateCachedTrace(); repaint(); }
+
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
+    void mouseExit(const juce::MouseEvent& e) override;
 
     // Trackpad gestures for horizontal zoom/pan: two-finger drag pans the view
     // (delivered as wheel deltas, same convention ZoomableImageView::
@@ -107,6 +115,17 @@ public:
 private:
     int xToSample(int x) const;
     int sampleToX(int sample) const;
+
+    // Shared high-contrast vertical bar (ink fill, surface-coloured border)
+    // used for the hover indicator -- see paint()'s doc comment for why it's
+    // factored out.
+    void drawContrastBar(juce::Graphics& g, float x, float height) const;
+
+    // Same shape, rotated 90 degrees -- the selection rectangle's top/bottom
+    // edges. atBottomEdge: false positions the bar's top flush against edgeY
+    // (for the top edge), true positions its bottom flush against edgeY (for
+    // the bottom edge) -- see the .cpp for why it's never centred on edgeY.
+    void drawContrastBarHorizontal(juce::Graphics& g, float x1, float x2, float edgeY, bool atBottomEdge) const;
 
     // Pre-rendered, viewport-sized trace cache. paint()'s per-column min/max
     // scan (viewLengthSamples samples total, worst case the whole buffer)
@@ -141,6 +160,10 @@ private:
     int selectionStartSample = 0;
     int selectionEndSample = 0;
     bool hasSelection = false;
+
+    // Hover playhead-style indicator -- local x of the last mouseMove,
+    // -1 while the cursor isn't over this view at all (see mouseExit()).
+    int hoverX = -1;
 
     // Gesture classification for click-drag interaction with an existing
     // selection: resizing an edge, moving the whole selection, or creating a

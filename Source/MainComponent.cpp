@@ -83,6 +83,9 @@ MainComponent::MainComponent()
     splitModeToggle.setClickingTogglesState(true);
     splitModeToggle.onClick = [this] { setSplitMode(splitModeToggle.getToggleState()); };
 
+    deselectButton.setEnabled(false); // no selection to clear until one exists -- see handleAsyncUpdate()
+    deselectButton.onClick = [this] { clearCurrentSelection(); };
+
     sampleModeCombo.addItem("Bipolar", 1);
     sampleModeCombo.addItem("Unipolar", 2);
     sampleModeCombo.setSelectedId(1, juce::dontSendNotification);
@@ -705,6 +708,7 @@ void MainComponent::updatePluginListEnablement()
 
     horizontalScrollBar.setVisible(hasImage);
     splitModeToggle.setVisible(hasImage);
+    deselectButton.setVisible(hasImage);
     rightColumn.setHasImage(hasImage);
 
     // The bipolar/unipolar dropdown is only relevant while a chain session is
@@ -777,6 +781,8 @@ void MainComponent::handleAsyncUpdate()
         refreshLivePreview(); // must still reprocess bytes -- the glitched region itself re-scopes
     else if (workingImage != nullptr)
         updateHighlightOverlay(*workingImage, getCurrentSelectionScope()); // selection-only change: no image rebuild needed at all
+
+    deselectButton.setEnabled(! getCurrentSelectionScope().range.isEmpty());
 }
 
 void MainComponent::resized()

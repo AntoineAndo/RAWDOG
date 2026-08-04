@@ -290,6 +290,11 @@ private:
     std::array<WaveformView, 4> channelWaveformViews; // indexed by (int) RawImage::Channel; lane 3 (alpha) is only ever shown for a loaded PNG with a real alpha channel
     juce::TextButton splitModeToggle { "Split Channels" };
 
+    // Clears whichever waveform lane currently has an active selection (see
+    // clearCurrentSelection()) -- disabled whenever there's nothing to clear
+    // (see handleAsyncUpdate()), so it's never a no-op click.
+    juce::TextButton deselectButton { "Deselect" };
+
     // The effect chain "rack" -- lives under the left column's "Effect Chain"
     // tab (see LeftColumnPanel), threaded into its constructor exactly like
     // pluginListBox is. Its callbacks are wired in the constructor to
@@ -344,7 +349,7 @@ private:
     RightColumnPanel rightColumn { imagePreview, statusLabel, waveformView, horizontalScrollBar,
                                     channelWaveformViews[0], channelWaveformViews[1], channelWaveformViews[2],
                                     channelWaveformViews[3],
-                                    splitModeToggle,
+                                    splitModeToggle, deselectButton,
                                     sampleModeLabel, sampleModeCombo, imageSizeLabel, previewBusySpinner };
 
     juce::StretchableLayoutManager outerLayout;
