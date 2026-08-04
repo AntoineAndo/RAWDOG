@@ -509,13 +509,15 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // Gated on pluginChain.empty(), not pluginEditorPanel -- a chain
             // session stays "open" (blocking Undo) even with nothing
             // currently selected (see deselectChainSlot()'s doc comment).
-            result.setActive(! undoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            result.setActive(! undoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr
+                              && fileModifierPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case redoCommand:
             result.setInfo("Redo", "Redo the last undone action", "Edit", 0);
             result.addDefaultKeypress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
-            result.setActive(! redoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            result.setActive(! redoStack.empty() && pluginChain.empty() && headerEditorPanel == nullptr
+                              && fileModifierPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case cancelEditorCommand:
@@ -523,12 +525,13 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // ever surfaced if this were added to a PopupMenu, which it isn't) -
             // purely a keyboard shortcut, mirroring whichever panel's own
             // Cancel button is currently on-screen. Deliberately still gated
-            // on pluginEditorPanel specifically (not pluginChain.empty()):
-            // Cancel removes whichever slot is selected, so there's
+            // on pluginEditorPanel/fileModifierPanel specifically (not
+            // pluginChain.empty()): Cancel removes whichever slot is selected
+            // (or discards the file-modifier preview), so there's
             // nothing for it to do with no slot mounted.
             result.setInfo("Cancel Editor", "Remove the selected chain slot, or cancel the header edit", "Edit", 0);
             result.addDefaultKeypress(juce::KeyPress::escapeKey, juce::ModifierKeys());
-            result.setActive(pluginEditorPanel != nullptr || headerEditorPanel != nullptr);
+            result.setActive(pluginEditorPanel != nullptr || headerEditorPanel != nullptr || fileModifierPanel != nullptr);
             break;
 
         case loadImageCommand:
@@ -542,7 +545,8 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             // nothing.
             result.setInfo("Load Image...", "Load a BMP, PNM, PNG, or JPEG image", "File", 0);
             result.addDefaultKeypress('o', juce::ModifierKeys::commandModifier);
-            result.setActive(pluginChain.empty() && headerEditorPanel == nullptr && ! imageLoadInProgress);
+            result.setActive(pluginChain.empty() && headerEditorPanel == nullptr
+                              && fileModifierPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case resetCommand:
@@ -554,7 +558,7 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             result.setInfo("Reset to Original", "Discard all edits and revert to the originally loaded image", "File", 0);
             result.addDefaultKeypress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
             result.setActive(originalImage != nullptr && pluginChain.empty()
-                              && headerEditorPanel == nullptr && ! imageLoadInProgress);
+                              && headerEditorPanel == nullptr && fileModifierPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case exportImageCommand:
@@ -566,7 +570,7 @@ void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationC
             result.setInfo("Export Image...", "Export the current image as a PNG", "File", 0);
             result.addDefaultKeypress('s', juce::ModifierKeys::commandModifier);
             result.setActive(workingImage != nullptr && pluginChain.empty()
-                              && headerEditorPanel == nullptr && ! imageLoadInProgress);
+                              && headerEditorPanel == nullptr && fileModifierPanel == nullptr && ! imageLoadInProgress);
             break;
 
         case openSettingsCommand:
@@ -605,6 +609,8 @@ bool MainComponent::perform(const InvocationInfo& info)
                 cancelEditorClicked();
             else if (headerEditorPanel != nullptr)
                 cancelHeaderEditClicked();
+            else if (fileModifierPanel != nullptr)
+                cancelFileModifierClicked();
             return true;
 
         case loadImageCommand:
@@ -667,12 +673,13 @@ void MainComponent::updatePluginListEnablement()
 {
     const bool hasImage = workingImage != nullptr;
 
-    // Hard-walled off while the header editor is open or a load is in
-    // flight, but deliberately NOT on hasImage -- browsing/searching the
-    // plugin list is useful even with nothing loaded yet; only actually
-    // *loading* a plugin needs an image, and addPluginToChain() itself
-    // guards that (double-clicking a row without an image is a no-op there).
-    const bool listBrowsable = headerEditorPanel == nullptr && ! imageLoadInProgress;
+    // Hard-walled off while the header editor or file modifier is open, or a
+    // load is in flight, but deliberately NOT on hasImage -- browsing/
+    // searching the plugin list is useful even with nothing loaded yet; only
+    // actually *loading* a plugin needs an image, and addPluginToChain()
+    // itself guards that (double-clicking a row without an image is a no-op
+    // there).
+    const bool listBrowsable = headerEditorPanel == nullptr && fileModifierPanel == nullptr && ! imageLoadInProgress;
     pluginListBox.setEnabled(listBrowsable);
     listModel.setEnabled(listBrowsable);
     leftColumn.setListControlsEnabled(listBrowsable);
@@ -680,7 +687,7 @@ void MainComponent::updatePluginListEnablement()
 
     // The chain rack itself still requires an image (there's nothing for a
     // chain to process without one), unlike the browser above.
-    const bool chainInteractive = hasImage && headerEditorPanel == nullptr && ! imageLoadInProgress;
+    const bool chainInteractive = hasImage && headerEditorPanel == nullptr && fileModifierPanel == nullptr && ! imageLoadInProgress;
     effectChainPanel.setEnabled(chainInteractive);
     effectChainPanel.setHasImage(hasImage);
 
@@ -724,6 +731,10 @@ void MainComponent::updatePluginListEnablement()
     // (BMP-24bit/PNM-P6/PNG) and never while the header editor is open (a live BMP
     // header edit can change biBitCount away from 24, making hasChannelPlanes()
     // false mid-edit, and header edits have no per-channel meaning at all).
+    // Also disabled while the file modifier is open: its cached preview
+    // candidate (fileModifierCandidateChannelBytes/...VisualOrderBytes) is
+    // scoped to whichever lane was selected when the last preview tick ran,
+    // and would silently go stale if the selection's channel changed under it.
     // Toggling it is *also* disabled while a chain session is open: the live-
     // preview worker thread renders directly from RawImage's own render/plane
     // caches whenever the chain is non-empty (see LivePreviewWorker's
@@ -734,7 +745,7 @@ void MainComponent::updatePluginListEnablement()
     // already-on split mode started before the session opened stays on and
     // fully live-editable for the whole session (channel-scoped Apply is a
     // supported, unrelated code path).
-    const bool splitMeaningful = hasImage && headerEditorPanel == nullptr && workingImage->hasChannelPlanes();
+    const bool splitMeaningful = hasImage && headerEditorPanel == nullptr && fileModifierPanel == nullptr && workingImage->hasChannelPlanes();
     splitModeToggle.setEnabled(splitMeaningful && ! chainSessionOpen && ! imageLoadInProgress);
 
     if (! splitMeaningful && splitModeToggle.getToggleState())
@@ -779,6 +790,8 @@ void MainComponent::handleAsyncUpdate()
     // every selection change even with nothing currently mounted for editing.
     if (! pluginChain.empty())
         refreshLivePreview(); // must still reprocess bytes -- the glitched region itself re-scopes
+    else if (fileModifierPanel != nullptr)
+        refreshFileModifierPreview(); // same reasoning -- the mix result is scoped to the selection
     else if (workingImage != nullptr)
         updateHighlightOverlay(*workingImage, getCurrentSelectionScope()); // selection-only change: no image rebuild needed at all
 

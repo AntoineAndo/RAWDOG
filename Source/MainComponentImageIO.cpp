@@ -127,10 +127,11 @@ void MainComponent::loadImageFile(const juce::File& file)
                     return;
 
                 // Belt-and-braces on the gating argument: while
-                // imageLoadInProgress, no chain session or header
-                // edit can open, so the install can never land into
-                // one (see updatePluginListEnablement()/menuModel).
-                jassert(self->pluginChain.empty() && self->headerEditorPanel == nullptr);
+                // imageLoadInProgress, no chain session, header edit, or
+                // file-modifier session can open, so the install can never
+                // land into one (see updatePluginListEnablement()/menuModel).
+                jassert(self->pluginChain.empty() && self->headerEditorPanel == nullptr
+                        && self->fileModifierPanel == nullptr);
 
                 if (result->working == nullptr)
                 {

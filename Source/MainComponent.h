@@ -10,6 +10,8 @@
 #include "EffectChainPanel.h"
 #include "ExportSettingsStore.h"
 #include "FavouritePluginsStore.h"
+#include "FileByteMixer.h"
+#include "FileModifierPanel.h"
 #include "GeneralSettingsStore.h"
 #include "GrippedResizerBar.h"
 #include "HeaderEditorPanel.h"
@@ -164,6 +166,18 @@ private:
     void cancelHeaderEditClicked();
     void endHeaderEditSession();
     void refreshHeaderLivePreview(const RawImage::BmpEditableHeaderFields& candidate);
+
+    // Byte-mix an arbitrary file's raw bytes into workingImage's pixel data
+    // (XOR/wrapped-add/replace, via FileByteMixer::mixBytes()), scoped to the
+    // current waveform selection exactly like the plugin chain. Mutually
+    // exclusive with the plugin chain and the header editor, same shape as
+    // openHeaderEditorClicked()/applyHeaderEditClicked()/cancelHeaderEditClicked().
+    void openFileModifierClicked();
+    void chooseModifierFileClicked();
+    void refreshFileModifierPreview();
+    void applyFileModifierClicked();
+    void cancelFileModifierClicked();
+    void endFileModifierSession();
     void resetClicked();
     void undoClicked();
     void redoClicked();
@@ -327,7 +341,7 @@ private:
     PluginListModel listModel { scanner.getKnownPluginList(), favouritePluginsStore, pluginPresetsStore, pluginEnablementStore };
 
     MainMenuModel menuModel { MainMenuModel::Callbacks {
-        [this] { return ! pluginChain.empty() || headerEditorPanel != nullptr || imageLoadInProgress; },
+        [this] { return ! pluginChain.empty() || headerEditorPanel != nullptr || fileModifierPanel != nullptr || imageLoadInProgress; },
         [this](juce::PopupMenu& menu)
         {
             menu.addCommandItem(&commandManager, undoCommand);
@@ -337,7 +351,9 @@ private:
         [this] { openHeaderEditorClicked(); },
         [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, loadImageCommand); },
         [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, resetCommand); },
-        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, exportImageCommand); }
+        [this](juce::PopupMenu& menu) { menu.addCommandItem(&commandManager, exportImageCommand); },
+        [this] { return workingImage != nullptr; },
+        [this] { openFileModifierClicked(); }
     } };
 
     // Parents the effect-chain rack + plugin list (+ optionally the
@@ -412,6 +428,19 @@ private:
     // workingImage itself is only touched by applyHeaderEditClicked().
     std::unique_ptr<RawImage> headerEditScratch;
     std::unique_ptr<HeaderEditorPanel> headerEditorPanel;
+
+    // While fileModifierPanel is open, these track the last-previewed mix
+    // result -- same "cache the preview, Apply commits it directly" shape as
+    // livePreviewChannel/livePreviewChannelPlaneBytes/livePreviewVisualOrderBytes
+    // above, just computed synchronously (mixBytes() is cheap byte math, no
+    // worker thread needed). modifierFileBytes holds the chosen file's raw
+    // bytes, read once by chooseModifierFileClicked() and reused for every
+    // live-preview tick until the session ends.
+    std::unique_ptr<FileModifierPanel> fileModifierPanel;
+    juce::MemoryBlock modifierFileBytes;
+    std::optional<RawImage::Channel> fileModifierPreviewChannel;
+    juce::MemoryBlock fileModifierCandidateChannelBytes;
+    juce::MemoryBlock fileModifierCandidateVisualOrderBytes;
 
     // Lazily created on the first "Settings..." click and reused after -
     // openSettingsClicked() just re-shows/refronts it rather than recreating.

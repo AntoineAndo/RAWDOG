@@ -39,6 +39,14 @@ public:
         // ApplicationCommand item, not a plain menu.addItem() -- see
         // populateFileMenuLoadImageItem's comment above for why.
         std::function<void(juce::PopupMenu&)> populateFileMenuExportItem;
+
+        // Same plain-menu.addItem() shape as canEditHeader/onEditHeader above
+        // (not an ApplicationCommand item, since the File Modifier panel has
+        // no keyboard shortcut of its own), but appended to the *Edit* menu
+        // in getMenuForIndex() rather than File -- it edits pixel content,
+        // not file I/O.
+        std::function<bool()> canOpenFileModifier;
+        std::function<void()> onOpenFileModifier;
     };
 
     explicit MainMenuModel(Callbacks callbacksIn) : callbacks(std::move(callbacksIn)) {}
@@ -50,7 +58,8 @@ public:
 private:
     enum MenuItemIDs
     {
-        editHeaderMenuItem = 1
+        editHeaderMenuItem = 1,
+        fileModifierMenuItem
     };
 
     Callbacks callbacks;

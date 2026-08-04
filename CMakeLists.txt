@@ -24,6 +24,7 @@ target_sources(RAWDOG PRIVATE
     Source/Main.cpp
     Source/LivePreviewWorker.cpp
     Source/MainComponent.cpp
+    Source/MainComponentFileModifier.cpp
     Source/MainComponentHeaderEditor.cpp
     Source/MainComponentImageIO.cpp
     Source/MainComponentPluginEditor.cpp

@@ -28,6 +28,7 @@ juce::PopupMenu MainMenuModel::getMenuForIndex(int topLevelMenuIndex, const juce
     else if (topLevelMenuIndex == 1)
     {
         callbacks.populateEditMenu(menu);
+        menu.addItem(fileModifierMenuItem, "Add File Modifier...", callbacks.canOpenFileModifier() && ! panelOpen);
     }
 
     return menu;
@@ -38,6 +39,7 @@ void MainMenuModel::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
     switch (menuItemID)
     {
         case editHeaderMenuItem: callbacks.onEditHeader(); break;
+        case fileModifierMenuItem: callbacks.onOpenFileModifier(); break;
         default: break;
     }
 }
