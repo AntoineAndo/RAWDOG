@@ -949,6 +949,21 @@ private:
             indexLabel.setInterceptsMouseClicks(false, false);
             addAndMakeVisible(indexLabel);
 
+            // Only "Brightness" exists for v1 (see ConditionType) -- this
+            // label just names the condition kind; the actual threshold/
+            // comparison live in their own controls to the right.
+            conditionTypeCombo.items.add("Brightness");
+            conditionTypeCombo.items.add("Saturation");
+            conditionTypeCombo.selectedIndex = currentCondition.type == ConditionType::saturation ? 1 : 0;
+            conditionTypeCombo.setTooltip("Brightness: average of R/G/B. Saturation: how vivid vs. grey a pixel is.");
+            conditionTypeCombo.onChange = [this, onConditionChangedIn](int index)
+            {
+                currentCondition.type = index == 1 ? ConditionType::saturation : ConditionType::brightness;
+                if (onConditionChangedIn)
+                    onConditionChangedIn(currentCondition);
+            };
+            addAndMakeVisible(conditionTypeCombo);
+
             // .add() with an explicit fromUTF8() conversion, not a braced
             // initializer list assigned to items directly -- that path
             // decoded the >= glyph's UTF-8 bytes as if they were Latin-1,
@@ -1098,6 +1113,8 @@ private:
             comparisonCombo.setBounds(header.removeFromRight(46));
             header.removeFromRight(4);
 
+            conditionTypeCombo.setBounds(header);
+
             if (expanded)
             {
                 auto branchArea = area.reduced(branchAreaMargin, 0);
@@ -1129,7 +1146,7 @@ private:
 
         juce::Label indexLabel, branchALabel, branchBLabel;
         juce::TextEditor thresholdEditor;
-        MiniDropdown comparisonCombo, modeCombo;
+        MiniDropdown conditionTypeCombo, comparisonCombo, modeCombo;
         CheckboxComponent checkbox;
         GripHandle grip;
         ExpandButton expandButton;
