@@ -17,17 +17,19 @@ Use and tweak multiple effects at the same time
 
 <img width="323" height="222" alt="image" src="https://github.com/user-attachments/assets/ec373411-4cec-4bf9-a3f6-23a3051893a9" />
 
-
 ### 🌈 Per-channel editing
 Split into R/G/B/A lanes and process each one independently
  
 <img width="300" height="280" alt="image" src="https://github.com/user-attachments/assets/ffb39757-ecc0-44ed-aff5-58f0a0ac6891" />
 
-
 ### 🎚️ Parameter fading 
 Ramp a plugin parameter across the selection instead of setting it static
 
 <img width="930" height="401" alt="image" src="https://github.com/user-attachments/assets/a5cf238d-aad9-461c-a176-fef3ed5f9637" />
+
+### ⑃ Condition on pixel brightness or saturation
+
+<img width="400" height="222" alt="image" src="https://github.com/user-attachments/assets/bc422d40-34e5-4a40-b9c3-b7c6f48f6faa" />
 
 ### ↩️ Undo/redo
 ### 🎛️ Works with VST3 and AU plugins
