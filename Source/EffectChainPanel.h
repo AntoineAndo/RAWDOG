@@ -308,7 +308,7 @@ private:
         }
 
         // Same hover/dashed-box treatment as AddEffectRow, just squared and
-        // holding a single "..." glyph instead of label text -- reads as the
+        // holding a single "+" glyph instead of label text -- reads as the
         // same family of control sitting right beside it, not a stray icon.
         void mouseEnter(const juce::MouseEvent&) override { hovering = true; repaint(); }
         void mouseExit(const juce::MouseEvent&) override { hovering = false; repaint(); }
@@ -331,27 +331,127 @@ private:
             g.setColour(lineColour);
             g.fillPath(dashedOutline);
 
-            // Drawn as three geometric dots, not a text glyph -- a font's
-            // drawText() centres the FULL ascent/descent box, but a
-            // baseline-hugging glyph like "..." only occupies the bottom
-            // sliver of that box, so text-based centring always reads as too
-            // high. Circles centred directly on this component's own
-            // geometry sidestep font metrics entirely.
+            // Drawn as two crossed geometric strokes, not a text glyph --
+            // sidesteps font metrics/centring entirely, the same reasoning
+            // ExpandButton/RemoveButton's glyphs use.
             g.setColour(lineColour);
             const auto centre = getLocalBounds().toFloat().getCentre();
-            constexpr float dotRadius = 1.5f;
-            constexpr float dotSpacing = 6.0f;
-            for (int i = -1; i <= 1; ++i)
-            {
-                const float cx = centre.x + (float) i * dotSpacing;
-                g.fillEllipse(cx - dotRadius, centre.y - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
-            }
+            constexpr float armLength = 5.0f;
+            g.drawLine(centre.x - armLength, centre.y, centre.x + armLength, centre.y, 1.5f);
+            g.drawLine(centre.x, centre.y - armLength, centre.x, centre.y + armLength, 1.5f);
         }
 
         std::function<void()> onClick;
 
     private:
         bool hovering = false;
+    };
+
+    // A row's "x" remove button -- shared by RowComponent and
+    // ConditionalRowComponent so both literally use the same control.
+    // Custom-painted rather than a juce::TextButton: LookAndFeel_V4's default
+    // drawButtonText() reserves edge padding proportional to
+    // min(width,height)/2 (its corner-radius heuristic), which eats most of a
+    // narrow button's interior and ellipsizes the glyph to "..." -- exactly
+    // the same class of bug ExpandButton/MenuTriggerButton were written to
+    // avoid, and worse here since it's height-dependent, so the identical
+    // pixel width can render fine in one row and fail in a taller one.
+    struct RemoveButton : public juce::Component,
+                           public juce::SettableTooltipClient
+    {
+        RemoveButton() { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
+
+        void mouseUp(const juce::MouseEvent& e) override
+        {
+            if (isEnabled() && contains(e.getPosition()) && onClick)
+                onClick();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto& palette = RawdogLookAndFeel::Palette::get();
+            g.setColour(isEnabled() ? palette.ink : palette.inkMuted);
+            g.setFont(RawdogLookAndFeel::chromeFont(11.0f));
+            g.drawText(juce::CharPointer_UTF8("\xC3\x97"), getLocalBounds(), juce::Justification::centred); // multiplication sign, reused as "x"
+        }
+
+        std::function<void()> onClick;
+    };
+
+    // A tiny "current value + dropdown arrow" control, backed by a
+    // juce::PopupMenu rather than a real juce::ComboBox. A real ComboBox's
+    // own internal text display kept showing "..." for its selected item at
+    // every width tried, with no public way to reach in and zero out
+    // whatever padding/fitting it applies internally (unlike Label, which at
+    // least exposes setBorderSize() for exactly this problem -- see
+    // RowComponent's indexLabel). Drawing the text ourselves via plain
+    // Graphics::drawText (which never auto-ellipsizes, confirmed by
+    // ExpandButton/MenuTriggerButton/RemoveButton above) sidesteps the whole
+    // class of bug, and a manually-shown PopupMenu gives the same selection
+    // behaviour a real ComboBox would.
+    struct MiniDropdown : public juce::Component,
+                           public juce::SettableTooltipClient
+    {
+        MiniDropdown() { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
+
+        void mouseUp(const juce::MouseEvent& e) override
+        {
+            if (! isEnabled() || ! contains(e.getPosition()))
+                return;
+
+            juce::PopupMenu menu;
+            for (int i = 0; i < items.size(); ++i)
+                menu.addItem(i + 1, items[i], true, i == selectedIndex);
+
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result)
+            {
+                if (result <= 0)
+                    return;
+
+                selectedIndex = result - 1;
+                repaint();
+
+                if (onChange)
+                    onChange(selectedIndex);
+            });
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto& palette = RawdogLookAndFeel::Palette::get();
+            const bool enabled = isEnabled();
+            const auto lineColour = enabled ? palette.ink : palette.inkMuted;
+
+            g.setColour(palette.surface);
+            g.fillRect(getLocalBounds());
+            g.setColour(lineColour);
+            g.drawRect(getLocalBounds(), 1);
+
+            auto textArea = getLocalBounds().reduced(4, 0);
+            auto arrowZone = textArea.removeFromRight(12);
+
+            g.setColour(lineColour);
+            g.setFont(RawdogLookAndFeel::chromeFont(10.0f));
+            g.drawText(juce::isPositiveAndBelow(selectedIndex, items.size()) ? items[selectedIndex] : juce::String(),
+                       textArea, juce::Justification::centredLeft);
+
+            // Small downward triangle -- same shape idiom
+            // RawdogLookAndFeel::drawComboBox() uses for a real ComboBox's
+            // arrow, so this still reads as "a dropdown".
+            juce::Path arrow;
+            const auto centre = arrowZone.toFloat().getCentre();
+            constexpr float halfWidth = 3.5f, arrowHeight = 3.0f;
+            arrow.startNewSubPath(centre.x - halfWidth, centre.y - arrowHeight * 0.5f);
+            arrow.lineTo(centre.x + halfWidth, centre.y - arrowHeight * 0.5f);
+            arrow.lineTo(centre.x, centre.y + arrowHeight * 0.5f);
+            arrow.closeSubPath();
+            g.setColour(lineColour);
+            g.fillPath(arrow);
+        }
+
+        juce::StringArray items;
+        int selectedIndex = 0;
+        std::function<void(int)> onChange; // called with the newly selected index
     };
 
     // Common interface for a top-level rack row -- either a plain RowComponent
@@ -419,7 +519,6 @@ private:
             grip.onGripUp = std::move(onGripUpIn);
             addAndMakeVisible(grip);
 
-            removeButton.setButtonText(juce::CharPointer_UTF8("\xC3\x97")); // multiplication sign, reused as "x"
             removeButton.setTooltip("Remove this effect from the chain");
             removeButton.onClick = [onRemoveIn, pathIn] { if (onRemoveIn) onRemoveIn(pathIn); };
             addAndMakeVisible(removeButton);
@@ -506,7 +605,7 @@ private:
         juce::Label indexLabel, nameLabel, stateLabel;
         CheckboxComponent checkbox;
         GripHandle grip;
-        juce::TextButton removeButton;
+        RemoveButton removeButton;
     };
 
     // A placeholder row -- not a real chain entry, just an action. Styled
@@ -846,23 +945,21 @@ private:
             indexLabel.setText(juce::String(topIndexIn + 1).paddedLeft('0', 2), juce::dontSendNotification);
             indexLabel.setFont(RawdogLookAndFeel::chromeFont(8.0f));
             indexLabel.setJustificationType(juce::Justification::centred);
+            indexLabel.setBorderSize(juce::BorderSize<int> (0)); // Label's default border leaves too little width for "01".."99" at this column width
             indexLabel.setInterceptsMouseClicks(false, false);
             addAndMakeVisible(indexLabel);
 
-            // Only "Brightness" exists for v1 (see ConditionType) -- this
-            // label just names the condition kind; the actual threshold/
-            // comparison live in their own controls below.
-            conditionLabel.setText("Brightness", juce::dontSendNotification);
-            conditionLabel.setFont(RawdogLookAndFeel::chromeFont(10.0f));
-            conditionLabel.setInterceptsMouseClicks(false, false);
-            addAndMakeVisible(conditionLabel);
-
-            comparisonCombo.addItem(juce::CharPointer_UTF8("\xE2\x89\xA5"), 1); // >=
-            comparisonCombo.addItem("<", 2);
-            comparisonCombo.setSelectedId(currentCondition.op == ComparisonOp::greaterOrEqual ? 1 : 2, juce::dontSendNotification);
-            comparisonCombo.onChange = [this, onConditionChangedIn]
+            // .add() with an explicit fromUTF8() conversion, not a braced
+            // initializer list assigned to items directly -- that path
+            // decoded the >= glyph's UTF-8 bytes as if they were Latin-1,
+            // rendering as garbled "a-circumflex yen" text instead of the
+            // intended single >= character.
+            comparisonCombo.items.add(juce::String::fromUTF8("\xE2\x89\xA5")); // >=
+            comparisonCombo.items.add("<");
+            comparisonCombo.selectedIndex = currentCondition.op == ComparisonOp::greaterOrEqual ? 0 : 1;
+            comparisonCombo.onChange = [this, onConditionChangedIn](int index)
             {
-                currentCondition.op = comparisonCombo.getSelectedId() == 1 ? ComparisonOp::greaterOrEqual : ComparisonOp::lessThan;
+                currentCondition.op = index == 0 ? ComparisonOp::greaterOrEqual : ComparisonOp::lessThan;
                 if (onConditionChangedIn)
                     onConditionChangedIn(currentCondition);
             };
@@ -871,6 +968,7 @@ private:
             thresholdEditor.setInputRestrictions(3, "0123456789");
             thresholdEditor.setText(juce::String((int) currentCondition.threshold), juce::dontSendNotification);
             thresholdEditor.setTooltip("Brightness threshold (0-255)");
+            thresholdEditor.setColour(juce::TextEditor::textColourId, RawdogLookAndFeel::Palette::get().ink);
             thresholdEditor.onTextChange = [this, onConditionChangedIn]
             {
                 currentCondition.threshold = (juce::uint8) juce::jlimit(0, 255, thresholdEditor.getText().getIntValue());
@@ -879,15 +977,17 @@ private:
             };
             addAndMakeVisible(thresholdEditor);
 
-            modeCombo.addItem("Masked", 1);
-            modeCombo.addItem("Compacted", 2);
-            modeCombo.setSelectedId(conditional.mode == CompositingMode::masked ? 1 : 2, juce::dontSendNotification);
+            // Short forms -- the tooltip below spells out what each actually
+            // does; the dropdown itself just needs to fit comfortably at
+            // this row's width.
+            modeCombo.items = { "Masked", "Compact" };
+            modeCombo.selectedIndex = conditional.mode == CompositingMode::masked ? 0 : 1;
             modeCombo.setTooltip("Masked: both branches process the whole scope, then composite per pixel. "
                                   "Compacted: each branch only processes its own matching samples, packed together.");
-            modeCombo.onChange = [this, onModeChangedIn]
+            modeCombo.onChange = [this, onModeChangedIn](int index)
             {
                 if (onModeChangedIn)
-                    onModeChangedIn(modeCombo.getSelectedId() == 1 ? CompositingMode::masked : CompositingMode::compacted);
+                    onModeChangedIn(index == 0 ? CompositingMode::masked : CompositingMode::compacted);
             };
             addAndMakeVisible(modeCombo);
 
@@ -900,7 +1000,6 @@ private:
             grip.onGripUp = std::move(onGripUpIn);
             addAndMakeVisible(grip);
 
-            removeButton.setButtonText(juce::CharPointer_UTF8("\xC3\x97"));
             removeButton.setTooltip("Remove this condition from the chain");
             removeButton.onClick = [onRemoveIn, topIndexIn] { if (onRemoveIn) onRemoveIn({ topIndexIn, std::nullopt, -1 }); };
             addAndMakeVisible(removeButton);
@@ -955,14 +1054,28 @@ private:
             const auto& palette = RawdogLookAndFeel::Palette::get();
             const bool enabled = isEnabled();
 
+            // The divider-grey "shadow" fill only belongs behind the
+            // header's own trimmed box (matching RowComponent's fixed-height
+            // shadow trick) -- NOT the whole component. Unlike RowComponent,
+            // this component's bounds extend well past a single row height
+            // when expanded, so filling getLocalBounds() with divider grey
+            // here would wash the entire branch/padding area in shadow grey
+            // instead of the panel's normal white surface.
+            auto headerArea = getLocalBounds().withHeight(headerHeight);
             g.setColour(palette.divider);
-            g.fillRect(getLocalBounds());
+            g.fillRect(headerArea);
 
-            auto header = getLocalBounds().withHeight(headerHeight).withTrimmedRight(shadowOffset).withTrimmedBottom(shadowOffset);
+            auto header = headerArea.withTrimmedRight(shadowOffset).withTrimmedBottom(shadowOffset);
             g.setColour(! enabled ? palette.windowBg : palette.surface);
             g.fillRect(header);
             g.setColour(enabled ? palette.ink : palette.inkMuted);
             g.drawRect(header, 1);
+
+            if (expanded)
+            {
+                g.setColour(palette.surface);
+                g.fillRect(getLocalBounds().withTrimmedTop(headerHeight));
+            }
         }
 
         void resized() override
@@ -984,8 +1097,6 @@ private:
             header.removeFromRight(4);
             comparisonCombo.setBounds(header.removeFromRight(46));
             header.removeFromRight(4);
-
-            conditionLabel.setBounds(header);
 
             if (expanded)
             {
@@ -1016,13 +1127,13 @@ private:
         PixelCondition currentCondition;
         std::function<void()> onToggleExpand;
 
-        juce::Label indexLabel, conditionLabel, branchALabel, branchBLabel;
+        juce::Label indexLabel, branchALabel, branchBLabel;
         juce::TextEditor thresholdEditor;
-        juce::ComboBox comparisonCombo, modeCombo;
+        MiniDropdown comparisonCombo, modeCombo;
         CheckboxComponent checkbox;
         GripHandle grip;
         ExpandButton expandButton;
-        juce::TextButton removeButton;
+        RemoveButton removeButton;
 
         BranchList branchAList, branchBList;
     };
