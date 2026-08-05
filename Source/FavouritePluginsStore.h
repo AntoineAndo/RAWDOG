@@ -1,26 +1,20 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "RawdogPropertiesFile.h"
 
 // Persists the set of favourite plugins (by juce::PluginDescription::createIdentifierString(),
 // stable across machines/file locations) as a single newline-joined string in an
-// juce::ApplicationProperties-backed settings file. Writes immediately
+// juce::PropertiesFile-backed settings file, shared with the other *Store classes
+// that also use the "settings" suffix (see RawdogPropertiesFile). Writes immediately
 // (millisecondsBeforeSaving = 0) so a favourite toggle survives even a hard app quit
 // right after clicking. It's a single global set, not keyed by anything else.
 class FavouritePluginsStore
 {
 public:
-    FavouritePluginsStore()
+    FavouritePluginsStore() : propertiesFile(RawdogPropertiesFile::forSuffix("settings"))
     {
-        juce::PropertiesFile::Options options;
-        options.applicationName = "RAWDOG";
-        options.filenameSuffix = "settings";
-        options.folderName = "RAWDOG";
-        options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0;
-        appProperties.setStorageParameters(options);
-
-        favourites.addTokens(appProperties.getUserSettings()->getValue("favouritePlugins"), "\n", "");
+        favourites.addTokens(propertiesFile.getValue("favouritePlugins"), "\n", "");
         favourites.removeEmptyStrings();
     }
 
@@ -36,11 +30,12 @@ public:
         else
             favourites.removeString(pluginIdentifier);
 
-        appProperties.getUserSettings()->setValue("favouritePlugins", favourites.joinIntoString("\n"));
-        appProperties.saveIfNeeded();
+        propertiesFile.setValue("favouritePlugins", favourites.joinIntoString("\n"));
+        if (! propertiesFile.saveIfNeeded())
+            DBG("FavouritePluginsStore: failed to save settings file");
     }
 
 private:
-    juce::ApplicationProperties appProperties;
+    juce::PropertiesFile& propertiesFile;
     juce::StringArray favourites;
 };

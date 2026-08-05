@@ -94,7 +94,9 @@ public:
 
     FileByteMixer::Operation getSelectedOperation() const
     {
-        return (FileByteMixer::Operation) (operationCombo.getSelectedId() - 1);
+        // jlimit keeps a 0 selection (nothing chosen) from casting to an invalid enum value.
+        return (FileByteMixer::Operation) (juce::jlimit(1, operationCombo.getNumItems(),
+                                                          operationCombo.getSelectedId()) - 1);
     }
 
     float getBlend() const { return (float) (blendSlider.getValue() / 100.0); }

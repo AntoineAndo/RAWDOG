@@ -1,16 +1,8 @@
 #include "PluginPresetsStore.h"
 
-PluginPresetsStore::PluginPresetsStore()
+PluginPresetsStore::PluginPresetsStore() : propertiesFile(RawdogPropertiesFile::forSuffix("settings"))
 {
-    juce::PropertiesFile::Options options;
-    options.applicationName = "RAWDOG";
-    options.filenameSuffix = "settings";
-    options.folderName = "RAWDOG";
-    options.osxLibrarySubFolder = "Application Support";
-    options.millisecondsBeforeSaving = 0; // write immediately
-    appProperties.setStorageParameters(options);
-
-    presetsJson = juce::JSON::parse(appProperties.getUserSettings()->getValue("pluginPresets"));
+    presetsJson = juce::JSON::parse(propertiesFile.getValue("pluginPresets"));
 
     // Missing/corrupt value (first run, or a hand-edited settings file) --
     // start from a fresh empty object rather than propagating a non-object
@@ -68,8 +60,15 @@ std::optional<juce::MemoryBlock> PluginPresetsStore::getPresetState(const juce::
         {
             if (entry.getProperty("name", {}).toString() == presetName)
             {
+                // A hand-edited or otherwise corrupted settings file can hold a
+                // string that isn't valid base64 -- decode failure must not
+                // fall through as an empty/partial MemoryBlock wrapped in a
+                // "successful" optional, since that would feed garbage
+                // straight into a plugin's setStateInformation().
                 juce::MemoryBlock state;
-                state.fromBase64Encoding(entry.getProperty("state", {}).toString());
+                if (! state.fromBase64Encoding(entry.getProperty("state", {}).toString()))
+                    return std::nullopt;
+
                 return state;
             }
         }
@@ -125,6 +124,7 @@ void PluginPresetsStore::renamePreset(const juce::String& pluginIdentifier,
 
 void PluginPresetsStore::save()
 {
-    appProperties.getUserSettings()->setValue("pluginPresets", juce::JSON::toString(presetsJson));
-    appProperties.saveIfNeeded();
+    propertiesFile.setValue("pluginPresets", juce::JSON::toString(presetsJson));
+    if (! propertiesFile.saveIfNeeded())
+        DBG("PluginPresetsStore: failed to save settings file");
 }

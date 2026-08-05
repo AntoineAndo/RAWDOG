@@ -2,33 +2,27 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginScanner.h"
+#include "RawdogPropertiesFile.h"
 
 // Persists the ordered list of directories PluginScanner::scanAll() searches,
-// as a single newline-joined string in a juce::ApplicationProperties-backed
-// settings file (same pattern as FavouritePluginsStore). Seeded on first-ever
-// run with PluginScanner::getUnionOfDefaultLocations() so the OS-default
-// VST3/AU folders are already in the list as regular, removable entries -
-// not a separate hardcoded set layered underneath. Writes immediately
+// as a single newline-joined string in a juce::PropertiesFile-backed
+// settings file shared with the other *Store classes using the "settings"
+// suffix (see RawdogPropertiesFile). Seeded on first-ever run with
+// PluginScanner::getUnionOfDefaultLocations() so the OS-default VST3/AU
+// folders are already in the list as regular, removable entries - not a
+// separate hardcoded set layered underneath. Writes immediately
 // (millisecondsBeforeSaving = 0), same as every other *Store in this app.
 class PluginDirectoriesStore
 {
 public:
-    PluginDirectoriesStore()
+    PluginDirectoriesStore() : propertiesFile(RawdogPropertiesFile::forSuffix("settings"))
     {
-        juce::PropertiesFile::Options options;
-        options.applicationName = "RAWDOG";
-        options.filenameSuffix = "settings";
-        options.folderName = "RAWDOG";
-        options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0;
-        appProperties.setStorageParameters(options);
-
         // containsKey(), not "is the stored value empty" - a user who
         // deliberately removes every directory must not have the defaults
         // silently reappear on the next launch.
-        if (appProperties.getUserSettings()->containsKey("pluginDirectories"))
+        if (propertiesFile.containsKey("pluginDirectories"))
         {
-            directories.addTokens(appProperties.getUserSettings()->getValue("pluginDirectories"), "\n", "");
+            directories.addTokens(propertiesFile.getValue("pluginDirectories"), "\n", "");
             directories.removeEmptyStrings();
         }
         else
@@ -87,10 +81,11 @@ public:
 private:
     void save()
     {
-        appProperties.getUserSettings()->setValue("pluginDirectories", directories.joinIntoString("\n"));
-        appProperties.saveIfNeeded();
+        propertiesFile.setValue("pluginDirectories", directories.joinIntoString("\n"));
+        if (! propertiesFile.saveIfNeeded())
+            DBG("PluginDirectoriesStore: failed to save settings file");
     }
 
-    juce::ApplicationProperties appProperties;
+    juce::PropertiesFile& propertiesFile;
     juce::StringArray directories;
 };

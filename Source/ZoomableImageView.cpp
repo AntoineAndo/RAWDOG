@@ -26,7 +26,7 @@ void ZoomableImageView::setImage(juce::Image newImage, bool resetView)
 
 void ZoomableImageView::setHighlightRegion(std::optional<juce::Range<int>> imageRowRange, juce::Colour colour)
 {
-    highlightRegion = imageRowRange.has_value()
+    highlightRegion = (imageRowRange.has_value() && ! imageRowRange->isEmpty())
         ? std::optional<HighlightRegion>({ imageRowRange->getStart(), imageRowRange->getEnd() - 1 })
         : std::nullopt;
     highlightColour = colour;

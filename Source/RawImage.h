@@ -46,7 +46,11 @@ public:
     {
         uint32_t bfOffBits = 0;
         int32_t  biWidth = 0, biHeight = 0;
-        uint16_t biBitCount = 24;
+        // int32_t, not the uint16_t the header field actually is: this lets an
+        // out-of-range editor entry (e.g. 65600) reach validateBmpHeaderFields()
+        // intact so it can be rejected there, the same way biWidth/biHeight's
+        // out-of-range values are rejected rather than silently truncated first.
+        int32_t  biBitCount = 24;
         uint32_t biCompression = 0;
     };
 
@@ -139,11 +143,13 @@ public:
     // cases without special-casing.
     const juce::MemoryBlock& getVisualOrderedPixelBytes() const;
 
-    // Inverse of the above: splices newVisualOrderBytes (must be
+    // Inverse of the above: splices newVisualOrderBytes (expected to be
     // width*height*channels bytes, same layout as getVisualOrderedPixelBytes())
-    // back into pixelBytes' real (possibly bottom-up/padded) row layout.
-    // Mutating; invalidates the channel-plane cache since pixelBytes changed.
-    // The whole-buffer analogue of applyChannelBytes().
+    // back into pixelBytes' real (possibly bottom-up/padded) row layout. A
+    // shorter-than-expected buffer is bounds-checked by remapPixelRowOrder()
+    // rather than read past its end - rows/tails beyond its actual size are
+    // just skipped. Mutating; invalidates the channel-plane cache since
+    // pixelBytes changed. The whole-buffer analogue of applyChannelBytes().
     void applyVisualOrderedBytes(const juce::MemoryBlock& newVisualOrderBytes);
 
     // Pure/non-mutating counterpart, for a live-preview tick - same
@@ -232,6 +238,7 @@ public:
 
     int getWidth() const { return width; }
     int getHeight() const { return height; }
+    int getChannelCount() const { return channels; }
 
     juce::MemoryBlock headerBytes;
     juce::MemoryBlock pixelBytes;
@@ -328,12 +335,16 @@ private:
     // ensureVisualOrderUpToDate()) and previewWithVisualOrderedBytes()/
     // applyVisualOrderedBytes()'s inverse splice: copies width*channels bytes
     // per row between rawBytes (pixelBytes' own possibly-bottom-up/padded row
-    // layout) and canonicalBytes (always exactly width*height*channels bytes,
-    // top-down, unpadded). toCanonical selects the direction - true copies
-    // raw->canonical (the "get" direction), false copies canonical->raw (the
-    // "apply"/splice-back direction).
+    // layout) and canonicalBytes (nominally width*height*channels bytes,
+    // top-down, unpadded, but in the splice-back direction canonicalBytes is
+    // caller-supplied and not guaranteed to actually be that size). toCanonical
+    // selects the direction - true copies raw->canonical (the "get"
+    // direction), false copies canonical->raw (the "apply"/splice-back
+    // direction). canonicalSize bounds every row's copy the same way rawSize
+    // already does, so an undersized canonicalBytes gets truncated per row
+    // instead of read/written past its end.
     void remapPixelRowOrder(uint8_t* rawBytes, size_t rawSize,
-                             uint8_t* canonicalBytes, bool toCanonical) const;
+                             uint8_t* canonicalBytes, size_t canonicalSize, bool toCanonical) const;
 
     // Plain-render cache backing toJuceImage() - same lazy dirty-flag idiom as
     // channelPlanes/visualOrderedPixelBytes above, invalidated at exactly the

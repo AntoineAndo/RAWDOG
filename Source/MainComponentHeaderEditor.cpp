@@ -15,7 +15,10 @@ void MainComponent::openHeaderEditorClicked()
         return;
     }
 
-    if (headerEditorPanel != nullptr)
+    // The entry point needs its own guard even though the menu item is
+    // already disabled while a panel is open -- mirrors the same three-way
+    // check in openFileModifierClicked().
+    if (headerEditorPanel != nullptr || fileModifierPanel != nullptr)
         return;
 
     headerEditScratch = std::make_unique<RawImage>(*workingImage);

@@ -155,7 +155,7 @@ PluginScanner::~PluginScanner() = default;
 
 bool PluginScanner::isScanning() const
 {
-    return scanThread != nullptr && scanThread->isThreadRunning();
+    return scanInProgress;
 }
 
 static juce::File getCachedPluginListFile()
@@ -198,9 +198,13 @@ void PluginScanner::scanAll(const juce::FileSearchPath& directoriesToSearch, std
     // Plugins" while isScanning()) shouldn't normally hit this, but bail out
     // rather than replacing scanThread out from under a still-running scan,
     // which would destroy it mid-flight and re-block the message thread via
-    // ~ThreadWithProgressWindow's stopThread().
+    // ~ThreadWithProgressWindow's stopThread(). isScanning() stays true
+    // through onComplete too, so this also covers a caller invoking scanAll()
+    // reentrantly from inside its own onComplete.
     if (isScanning())
         return;
+
+    scanInProgress = true;
 
     scanThread = std::make_unique<ScanThread>(formatManager, knownPluginList, directoriesToSearch,
         [this, userOnComplete = std::move(onComplete)]
@@ -210,6 +214,14 @@ void PluginScanner::scanAll(const juce::FileSearchPath& directoriesToSearch, std
 
             if (userOnComplete != nullptr)
                 userOnComplete();
+
+            // Cleared only after userOnComplete() returns, not before: a
+            // reentrant scanAll() call from inside that callback must still
+            // see a scan "in progress" so it bails out via the isScanning()
+            // guard above, rather than replacing scanThread while this
+            // ScanThread's threadComplete() is still on the call stack
+            // running the very callback that would trigger the replacement.
+            scanInProgress = false;
         });
     scanThread->launchThread();
 }

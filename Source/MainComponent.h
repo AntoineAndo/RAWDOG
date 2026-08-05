@@ -3,10 +3,12 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <array>
 #include <optional>
+#include <variant>
 #include "AboutWindow.h"
 #include "AppearanceSettingsStore.h"
 #include "BusySpinner.h"
 #include "ChainSlot.h"
+#include "ConditionalChainSlot.h"
 #include "EffectChainPanel.h"
 #include "ExportSettingsStore.h"
 #include "FavouritePluginsStore.h"
@@ -107,19 +109,30 @@ private:
     void filesDropped(const juce::StringArray& files, int x, int y) override;
     void exportImageClicked();
 
-    // Double-clicking a plugin row always appends to pluginChain (never
-    // replaces it) and selects the new slot -- see selectChainSlot() below.
-    // Validates/instantiates the new plugin before touching pluginChain at
-    // all, so a failed load never affects any already-loaded slot.
+    // Double-clicking a plugin row appends to pluginChain, or to one branch of
+    // a conditional slot if pendingInsertionTarget names one (set by clicking
+    // that branch's own "+ Add Effect" row -- see EffectChainPanel::
+    // onAddEffectClicked), and selects the new slot -- see selectChainSlot()
+    // below. Validates/instantiates the new plugin before touching the chain
+    // at all, so a failed load never affects any already-loaded slot.
     void addPluginToChain(int row);
 
-    // Mounts pluginChain[index]'s native editor (+ its own Automation tab) in
-    // the left column. If a different slot is currently selected,
-    // first writes its live ramps back into ChainSlot::ramps (see
-    // refreshLivePreview()'s doc comment for why that matters) and tears its
-    // panel down before mounting the new one. A no-op if index is already
-    // selected.
-    void selectChainSlot(int index);
+    // Appends a new, empty ConditionalChainSlot (both branches empty, Masked
+    // mode, brightness >= 128) to the top level of pluginChain -- wired to
+    // EffectChainPanel's "+ Add Condition" row. Conditional slots are never
+    // nested, so this always targets the top level, unlike addPluginToChain().
+    void addConditionalSlotToChain();
+
+    // Mounts the ChainSlot at `path`'s native editor (+ its own Automation
+    // tab) in the left column -- path may address a top-level slot or one
+    // nested inside a ConditionalChainSlot's branch (see ChainPath). If a
+    // different slot is currently selected, first writes its live ramps back
+    // into ChainSlot::ramps (see refreshLivePreview()'s doc comment for why
+    // that matters) and tears its panel down before mounting the new one. A
+    // no-op if path is already selected, invalid, or doesn't resolve to a
+    // plain ChainSlot (e.g. it names a ConditionalChainSlot itself, which has
+    // no single plugin to select).
+    void selectChainSlot(ChainPath path);
 
     // Wired to PluginEditorPanel's OK button: stops showing the currently
     // selected slot's editor (selectedChainSlot -> -1, pluginEditorPanel ->
@@ -134,29 +147,63 @@ private:
     // even with nothing selected. A no-op if nothing is currently selected.
     void deselectChainSlot();
 
-    // Removes pluginChain[index]. Delegates to endLivePreviewSession(false)
-    // (the same teardown Cancel uses) if this is the last slot, since an
-    // empty chain is defined as "no session open." Otherwise fixes up
-    // selectedChainSlot (three cases -- see PROJECT.md/the implementation
-    // plan) and only swaps the mounted editor if the removed slot was the
-    // selected one.
-    void removeChainSlot(int index);
+    // Removes the entry at `path` -- a top-level slot, a top-level
+    // ConditionalChainSlot (both its branches released), or one slot nested
+    // inside a branch. Delegates to endLivePreviewSession(false) (the same
+    // teardown Cancel uses) only if this empties pluginChain itself, since an
+    // empty top-level chain is defined as "no session open" -- removing the
+    // last slot in a branch just leaves that branch empty (a documented
+    // pass-through state), not a lost session. Otherwise fixes up
+    // selectedChainSlot and only swaps the mounted editor if the removed slot
+    // was the selected one.
+    void removeChainSlot(ChainPath path);
 
     // Moves pluginChain[from] to land at index `to` in the resulting array
     // (erase-then-insert, not a swap -- an arbitrary drag-to-reorder target can
     // land anywhere, not just an adjacent slot), shifting everything strictly
     // between the two positions by one, and fixes up selectedChainSlot to
     // follow whichever slot it pointed at. Safe without flushing the
-    // live-preview worker: this only relocates the ChainSlot/unique_ptr value,
-    // never the pointee, so any raw AudioPluginInstance* already captured in
-    // an in-flight request stays valid.
+    // live-preview worker: this only relocates the ChainEntry/unique_ptr
+    // value, never the pointee, so any raw AudioPluginInstance* already
+    // captured in an in-flight request stays valid. Top-level only -- a whole
+    // ConditionalChainSlot moves as one unit here, same as any other slot.
     void moveChainSlot(int from, int to);
 
-    void toggleChainSlotBypass(int index);
+    // The branch-local analogue of moveChainSlot() above -- reorders within
+    // one branch of the ConditionalChainSlot at pluginChain[conditionalIndex],
+    // never across branches or out to the top level.
+    void moveBranchSlot(int conditionalIndex, Branch branch, int from, int to);
+
+    // Flips `bypassed` on whatever `path` resolves to -- a top-level plain
+    // slot, a top-level ConditionalChainSlot (skips the whole conditional,
+    // both branches, buffer passes through unchanged), or a slot nested in a
+    // branch.
+    void toggleChainSlotBypass(ChainPath path);
+
+    // Wired to a ConditionalChainSlot's threshold field/comparison dropdown
+    // and its Masked/Compacted mode dropdown respectively -- both mutate the
+    // slot in place and call only refreshLivePreview(), deliberately NOT
+    // refreshEffectChainPanel(): a full rack rebuild while the threshold
+    // juce::TextEditor is mid-edit would destroy and recreate it, resetting
+    // focus/cursor position on every keystroke. Nothing else in the rack's
+    // own appearance depends on the exact threshold/mode value, so skipping
+    // the rebuild here is also simply correct, not just a workaround.
+    void setConditionalSlotCondition(int topIndex, PixelCondition condition);
+    void setConditionalSlotMode(int topIndex, CompositingMode mode);
 
     // Called after every chain mutation/selection/bypass change to re-derive
     // the rack UI's rows from the current pluginChain/selectedChainSlot state.
     void refreshEffectChainPanel();
+
+    // Resolves `path` to the actual ChainSlot it addresses, or nullptr if the
+    // path is out of range, or names a ConditionalChainSlot itself (branch ==
+    // nullopt pointing at a conditional entry) rather than a plain slot.
+    ChainSlot* resolveChainSlot(const ChainPath& path);
+
+    // Resolves (topIndex, branch) to that ConditionalChainSlot's branch vector,
+    // or nullptr if topIndex is out of range or doesn't name a conditional
+    // entry.
+    std::vector<ChainSlot>* resolveBranchContainer(int topIndex, Branch branch);
 
     void applyClicked();
     void cancelEditorClicked();
@@ -371,13 +418,6 @@ private:
     juce::StretchableLayoutManager outerLayout;
     GrippedResizerBar outerResizerBar { &outerLayout, 1, true /*vertical bar, dragged left/right*/ };
 
-    // Declared before pluginChain so it destructs (and detaches) first -
-    // member destruction order is the reverse of declaration order. Stays a
-    // single instance, re-attachTo()'d to whichever chain slot is currently
-    // selected/mounted -- only the selected slot ever has a live native
-    // editor a user could actually be tweaking.
-    PluginParameterWatcher pluginParamWatcher;
-
     std::unique_ptr<RawImage> originalImage;
     std::unique_ptr<RawImage> workingImage;
 
@@ -391,22 +431,47 @@ private:
     ExportSettingsStore exportSettingsStore;
 
     // The effect chain, in DSP order (index 0 processed first). Empty means
-    // "no plugin session open". Only ever grown by addPluginToChain() (after a
-    // successful PluginHost::createInstance()) and fully cleared by
-    // endLivePreviewSession() (Apply and Cancel both tear down the whole
-    // chain) or by removeChainSlot() shrinking it down to zero.
-    std::vector<ChainSlot> pluginChain;
+    // "no plugin session open". Each entry is either a plain ChainSlot or a
+    // ConditionalChainSlot holding two full sub-chains of its own. Only ever
+    // grown by addPluginToChain()/addConditionalSlotToChain() and fully
+    // cleared by endLivePreviewSession() (Apply and Cancel both tear down the
+    // whole chain) or by removeChainSlot() shrinking it down to zero.
+    std::vector<ChainEntry> pluginChain;
 
-    // Index into pluginChain of whichever slot's editor is currently mounted
-    // in pluginEditorPanel, or -1 if nothing is selected -- which can happen
+    // Set by clicking a branch's own "+ Add Effect" row (EffectChainPanel::
+    // onAddEffectClicked) -- bridges the gap between that click (which just
+    // switches to the plugin browser tab) and the later, asynchronous plugin
+    // double-click that calls addPluginToChain(). nullopt (or a path with
+    // branch == nullopt) means "top-level", matching the plain "+ Add Effect"
+    // row. Consumed and cleared inside addPluginToChain() regardless of
+    // outcome.
+    std::optional<ChainPath> pendingInsertionTarget;
+
+    // Declared after pluginChain, so implicit destruction (reverse of
+    // declaration order) tears this down -- and detaches its listener --
+    // before any ChainSlot::plugin above is freed. That ordering isn't what
+    // actually keeps this safe, though: the explicit
+    // pluginParamWatcher.attachTo(nullptr) call in ~MainComponent() already
+    // detaches before pluginChain's plugins are released, in the destructor
+    // body itself, well before any member's implicit destructor runs. Keep
+    // that call -- without it, a future reorder of these members could
+    // reintroduce a use-after-free (removeListener() firing on an
+    // already-freed AudioPluginInstance). Stays a single instance,
+    // re-attachTo()'d to whichever chain slot is currently
+    // selected/mounted -- only the selected slot ever has a live native
+    // editor a user could actually be tweaking.
+    PluginParameterWatcher pluginParamWatcher;
+
+    // Path to whichever slot's editor is currently mounted in
+    // pluginEditorPanel, or nullopt if nothing is selected -- which can happen
     // even with pluginChain non-empty (see deselectChainSlot()), so this is
     // NOT the same fact as "is a chain session open" (pluginChain.empty()).
-    // -1 whenever pluginChain itself is empty, but not only then.
-    int selectedChainSlot = -1;
+    // nullopt whenever pluginChain itself is empty, but not only then.
+    std::optional<ChainPath> selectedChainSlot;
 
-    // Declared after pluginChain as a matter of style (matching
-    // pluginParamWatcher's ordering rationale above), but the real safety
-    // guarantee is the explicit livePreviewWorker.stopThread() call in
+    // Declared after pluginChain, same reasoning as pluginParamWatcher above:
+    // implicit destruction order tears this down first, but the real safety
+    // guarantee is the explicit livePreviewWorker.shutdown() call in
     // ~MainComponent(), *before* releasing any chain slot's plugin -- not
     // implicit destruction order alone. See LivePreviewWorker's own comments
     // for why processing runs here instead of on the message thread.
@@ -533,6 +598,20 @@ private:
         bool bypassed = false;
     };
 
+    // The ConditionalChainSlot analogue of ChainSlotSnapshot -- condition/mode
+    // are plain copyable data (no live plugin instance involved), so only the
+    // two branches need per-slot snapshotting.
+    struct ConditionalChainSlotSnapshot
+    {
+        PixelCondition condition;
+        CompositingMode mode = CompositingMode::masked;
+        std::vector<ChainSlotSnapshot> branchA;
+        std::vector<ChainSlotSnapshot> branchB;
+        bool bypassed = false;
+    };
+
+    using ChainEntrySnapshot = std::variant<ChainSlotSnapshot, ConditionalChainSlotSnapshot>;
+
     struct EditorSnapshot
     {
         juce::MemoryBlock headerBytes;
@@ -545,25 +624,37 @@ private:
         // pluginChain.empty() already holds) -- lets Undo restore not just
         // the pre-Apply image bytes but the exact chain that produced them,
         // instead of leaving the rack empty.
-        std::vector<ChainSlotSnapshot> chain;
+        std::vector<ChainEntrySnapshot> chain;
     };
 
     std::vector<EditorSnapshot> undoStack;
     std::vector<EditorSnapshot> redoStack;
 
+    // Snapshots one ChainSlot at `path` -- shared by captureChainSnapshot()
+    // for both a top-level slot and a slot nested in a branch, sourcing ramps
+    // from the live editor panel if `path` is the currently selected slot,
+    // same live-vs-frozen precedence refreshLivePreview() uses.
+    ChainSlotSnapshot captureOneSlotSnapshot(const ChainSlot& slot, const ChainPath& path) const;
+
     // Captures the current pluginChain as re-instantiable snapshots (see
-    // ChainSlotSnapshot above) -- called by pushUndoState() so an undo entry
-    // can later restore the chain, not just the image bytes it produced.
-    std::vector<ChainSlotSnapshot> captureChainSnapshot() const;
+    // ChainSlotSnapshot/ConditionalChainSlotSnapshot above) -- called by
+    // pushUndoState() so an undo entry can later restore the chain, not just
+    // the image bytes it produced.
+    std::vector<ChainEntrySnapshot> captureChainSnapshot() const;
+
+    // Instantiates one ChainSlot from a snapshot via PluginHost::createInstance()
+    // + setStateInformation() -- shared by restoreChainFromSnapshot() for both
+    // top-level and branch-nested slots. Returns nullopt (and appends to
+    // failedNames) if the plugin can no longer be instantiated (uninstalled
+    // since, etc.), so a restore can skip just that slot rather than aborting.
+    std::optional<ChainSlot> instantiateSlotFromSnapshot(const ChainSlotSnapshot& entry, juce::StringArray& failedNames);
 
     // The inverse of captureChainSnapshot(): tears down whatever's currently
     // in pluginChain (defensive -- always empty here in practice, since
     // Undo/Redo are only ever active while pluginChain.empty() already
-    // holds) and recreates each slot via PluginHost::createInstance() +
-    // setStateInformation(). A slot whose plugin can no longer be
-    // instantiated (uninstalled since, etc.) is skipped rather than aborting
-    // the whole restore, reported via setStatus().
-    void restoreChainFromSnapshot(const std::vector<ChainSlotSnapshot>& snapshot);
+    // holds) and recreates each entry, reported via setStatus() if any slot
+    // (top-level or nested in a branch) failed to reload.
+    void restoreChainFromSnapshot(const std::vector<ChainEntrySnapshot>& snapshot);
 
     juce::ApplicationCommandManager commandManager;
 

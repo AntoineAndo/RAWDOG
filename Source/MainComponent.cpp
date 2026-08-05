@@ -128,15 +128,31 @@ MainComponent::MainComponent()
     pluginParamWatcher.onPluginParametersChanged = [this] { refreshLivePreview(); };
     pluginParamWatcher.onParameterValueChanged = [this](const juce::String& parameterName, const juce::String& valueText)
     {
-        if (selectedChainSlot >= 0)
-            setStatus(pluginChain[(size_t) selectedChainSlot].plugin->getName() + " - " + parameterName + ": " + valueText);
+        if (selectedChainSlot.has_value())
+            if (auto* slot = resolveChainSlot(*selectedChainSlot))
+                setStatus(slot->plugin->getName() + " - " + parameterName + ": " + valueText);
     };
 
-    effectChainPanel.onSelectSlot = [this](int index) { selectChainSlot(index); };
-    effectChainPanel.onRemoveSlot = [this](int index) { removeChainSlot(index); };
+    effectChainPanel.onSelectSlot = [this](ChainPath path) { selectChainSlot(path); };
+    effectChainPanel.onRemoveSlot = [this](ChainPath path) { removeChainSlot(path); };
     effectChainPanel.onReorderSlot = [this](int from, int to) { moveChainSlot(from, to); };
-    effectChainPanel.onToggleBypass = [this](int index) { toggleChainSlotBypass(index); };
-    effectChainPanel.onAddEffectClicked = [this] { leftColumn.showPluginsTab(); };
+    effectChainPanel.onReorderBranchSlot = [this](int topIndex, Branch branch, int from, int to)
+    {
+        moveBranchSlot(topIndex, branch, from, to);
+    };
+    effectChainPanel.onToggleBypass = [this](ChainPath path) { toggleChainSlotBypass(path); };
+    effectChainPanel.onAddEffectClicked = [this](std::optional<ChainPath> target)
+    {
+        pendingInsertionTarget = target;
+        leftColumn.showPluginsTab();
+    };
+    effectChainPanel.onAddConditionClicked = [this] { addConditionalSlotToChain(); };
+    effectChainPanel.onConditionChanged = [this](int topIndex, PixelCondition condition)
+    {
+        setConditionalSlotCondition(topIndex, condition);
+    };
+    effectChainPanel.onModeChanged = [this](int topIndex, CompositingMode mode) { setConditionalSlotMode(topIndex, mode); };
+    effectChainPanel.onExpansionChanged = [this] { refreshEffectChainPanel(); };
     effectChainPanel.onApplyClicked = [this] { applyClicked(); };
 
     // Every other rebuild() call happens after a chain mutation -- this is
@@ -242,9 +258,24 @@ MainComponent::~MainComponent()
     // threadShouldExit() between jobs) before forcing the issue.
     livePreviewWorker.shutdown(5000);
 
-    for (auto& slot : pluginChain)
-        if (slot.plugin != nullptr)
-            slot.plugin->releaseResources();
+    for (auto& entry : pluginChain)
+    {
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            if (slot->plugin != nullptr)
+                slot->plugin->releaseResources();
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
+            for (auto& s : conditional.branchA)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+            for (auto& s : conditional.branchB)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+        }
+    }
 }
 
 void MainComponent::setStatus(const juce::String& text)

@@ -1,35 +1,27 @@
 #pragma once
 
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "RawdogPropertiesFile.h"
 
 // Persists the folder the user last exported an image to (as a full path
-// string) in its own juce::ApplicationProperties-backed settings file, so a
-// later File > Export Image... starts back where the user left off rather
-// than always defaulting to Documents. Writes immediately
-// (millisecondsBeforeSaving = 0) so the choice survives a hard app quit right
-// after exporting. filenameSuffix must stay distinct from
-// FavouritePluginsStore/PluginPresetsStore: each is a separate
-// juce::ApplicationProperties instance, and sharing a suffix would point two
-// instances at the same underlying file.
+// string) in its own juce::PropertiesFile-backed settings file (via
+// RawdogPropertiesFile), so a later File > Export Image... starts back
+// where the user left off rather than always defaulting to Documents.
+// Writes immediately (millisecondsBeforeSaving = 0) so the choice survives
+// a hard app quit right after exporting. filenameSuffix must stay distinct
+// from FavouritePluginsStore/PluginPresetsStore: RawdogPropertiesFile hands
+// out one shared instance per suffix, and sharing a suffix would point this
+// store at the same underlying file as those two.
 class ExportSettingsStore
 {
 public:
-    ExportSettingsStore()
-    {
-        juce::PropertiesFile::Options options;
-        options.applicationName = "RAWDOG";
-        options.filenameSuffix = "exportsettings";
-        options.folderName = "RAWDOG";
-        options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0;
-        appProperties.setStorageParameters(options);
-    }
+    ExportSettingsStore() : propertiesFile(RawdogPropertiesFile::forSuffix("exportsettings")) {}
 
     // Documents if nothing's been remembered yet, or the remembered folder no
     // longer exists (e.g. an external drive that's since been unmounted).
     juce::File getLastExportDirectory()
     {
-        const auto stored = appProperties.getUserSettings()->getValue("lastExportDirectory");
+        const auto stored = propertiesFile.getValue("lastExportDirectory");
 
         if (stored.isNotEmpty())
         {
@@ -43,10 +35,11 @@ public:
 
     void setLastExportDirectory(const juce::File& directory)
     {
-        appProperties.getUserSettings()->setValue("lastExportDirectory", directory.getFullPathName());
-        appProperties.saveIfNeeded();
+        propertiesFile.setValue("lastExportDirectory", directory.getFullPathName());
+        if (! propertiesFile.saveIfNeeded())
+            DBG("ExportSettingsStore: failed to save settings file");
     }
 
 private:
-    juce::ApplicationProperties appProperties;
+    juce::PropertiesFile& propertiesFile;
 };

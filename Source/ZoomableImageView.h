@@ -25,7 +25,8 @@ public:
     // click at the right row but outside the image horizontally is not a
     // hit), matching the visible band exactly. paint() transforms its row
     // extent the same way it transforms the image itself, so it always
-    // tracks correctly regardless of current zoom/pan. Nullopt clears it.
+    // tracks correctly regardless of current zoom/pan. Nullopt, or an empty
+    // range, clears it.
     // This is far cheaper than a full setImage() call (no pixel data touched
     // at all), so a selection-only change should call this instead of
     // rebuilding the whole image.

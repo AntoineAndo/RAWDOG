@@ -48,9 +48,13 @@ public:
     // What double-clicking a row should load: the plugin to instantiate, and
     // (only for a preset row) the parameter state to apply right after.
     // Nullopt for a vendor header (nothing to load) or an out-of-range row.
+    // description is held by value rather than by pointer into cachedTypes,
+    // which applyFilter() clears and rebuilds on every search/favourite/
+    // rescan change -- a pointer would dangle the moment any of those fired
+    // between this call and the caller using it.
     struct RowTarget
     {
-        const juce::PluginDescription* description = nullptr;
+        juce::PluginDescription description;
         std::optional<juce::MemoryBlock> presetState;
     };
 
@@ -71,10 +75,10 @@ public:
             if (! juce::isPositiveAndBelow(row.presetIndex, presetNames.size()))
                 return std::nullopt;
 
-            return RowTarget { &desc, presetsStore.getPresetState(desc.createIdentifierString(), presetNames[row.presetIndex]) };
+            return RowTarget { desc, presetsStore.getPresetState(desc.createIdentifierString(), presetNames[row.presetIndex]) };
         }
 
-        return RowTarget { &desc, std::nullopt };
+        return RowTarget { desc, std::nullopt };
     }
 
     int getNumRows() override { return displayRows.size(); }

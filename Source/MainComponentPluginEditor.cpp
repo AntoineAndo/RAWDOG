@@ -2,6 +2,36 @@
 #include "PluginHost.h"
 #include "SampleFormat.h"
 
+ChainSlot* MainComponent::resolveChainSlot(const ChainPath& path)
+{
+    if (! juce::isPositiveAndBelow(path.topIndex, pluginChain.size()))
+        return nullptr;
+
+    auto& entry = pluginChain[(size_t) path.topIndex];
+
+    if (! path.branch.has_value())
+        return std::get_if<ChainSlot>(&entry); // nullptr if this entry is actually a ConditionalChainSlot
+
+    auto* conditional = std::get_if<ConditionalChainSlot>(&entry);
+    if (conditional == nullptr)
+        return nullptr;
+
+    auto& branchSlots = (*path.branch == Branch::a) ? conditional->branchA : conditional->branchB;
+    return juce::isPositiveAndBelow(path.branchIndex, branchSlots.size()) ? &branchSlots[(size_t) path.branchIndex] : nullptr;
+}
+
+std::vector<ChainSlot>* MainComponent::resolveBranchContainer(int topIndex, Branch branch)
+{
+    if (! juce::isPositiveAndBelow(topIndex, pluginChain.size()))
+        return nullptr;
+
+    auto* conditional = std::get_if<ConditionalChainSlot>(&pluginChain[(size_t) topIndex]);
+    if (conditional == nullptr)
+        return nullptr;
+
+    return branch == Branch::a ? &conditional->branchA : &conditional->branchB;
+}
+
 void MainComponent::addPluginToChain(int row)
 {
     // The plugin list itself stays browsable/searchable without an image
@@ -12,15 +42,15 @@ void MainComponent::addPluginToChain(int row)
         return;
 
     auto target = listModel.getLoadTarget(row);
-    if (! target.has_value() || target->description == nullptr)
+    if (! target.has_value())
         return;
 
-    const auto* desc = target->description;
+    const auto& desc = target->description;
 
-    // Validate/instantiate before touching pluginChain at all -- a failed new
+    // Validate/instantiate before touching the chain at all -- a failed new
     // load must never affect any slot already in the chain.
     juce::String errorMessage;
-    auto plugin = PluginHost::createInstance(scanner.getFormatManager(), *desc, sampleRate, blockSize, errorMessage);
+    auto plugin = PluginHost::createInstance(scanner.getFormatManager(), desc, sampleRate, blockSize, errorMessage);
 
     if (plugin == nullptr)
     {
@@ -36,18 +66,48 @@ void MainComponent::addPluginToChain(int row)
 
     ChainSlot slot;
     slot.plugin = std::move(plugin);
-    pluginChain.push_back(std::move(slot));
 
-    setStatus("Added to chain: " + desc->name);
+    // Consumed and cleared here regardless of outcome, so a later plain
+    // top-level "+ Add Effect" click never accidentally reuses a stale target.
+    const auto insertionTarget = pendingInsertionTarget;
+    pendingInsertionTarget.reset();
 
-    selectChainSlot((int) pluginChain.size() - 1);
+    ChainPath newPath;
+
+    if (insertionTarget.has_value() && insertionTarget->branch.has_value())
+    {
+        auto* container = resolveBranchContainer(insertionTarget->topIndex, *insertionTarget->branch);
+
+        if (container == nullptr)
+        {
+            // The conditional slot this was aimed at no longer exists (removed
+            // while the plugin browser was open) -- fall back to the top level
+            // rather than silently dropping the plugin the user just picked.
+            pluginChain.push_back(std::move(slot));
+            newPath = { (int) pluginChain.size() - 1, std::nullopt, -1 };
+        }
+        else
+        {
+            container->push_back(std::move(slot));
+            newPath = { insertionTarget->topIndex, insertionTarget->branch, (int) container->size() - 1 };
+        }
+    }
+    else
+    {
+        pluginChain.push_back(std::move(slot));
+        newPath = { (int) pluginChain.size() - 1, std::nullopt, -1 };
+    }
+
+    setStatus("Added to chain: " + desc.name);
+
+    selectChainSlot(newPath);
 
     // Unconditional, even though selectChainSlot() normally refreshes the
     // rack itself on success: if it bailed out early (no editor UI, or the
-    // header editor is open), the new slot would otherwise sit in
-    // pluginChain -- silently affecting every future refreshLivePreview()/
-    // Apply -- without ever appearing in the rack UI. rebuild() is cheap and
-    // idempotent, so a harmless redundant call on the common (success) path.
+    // header editor is open), the new slot would otherwise sit in the chain --
+    // silently affecting every future refreshLivePreview()/Apply -- without
+    // ever appearing in the rack UI. rebuild() is cheap and idempotent, so a
+    // harmless redundant call on the common (success) path.
     refreshEffectChainPanel();
 
     // The chain's shape just changed (a new slot appended) -- always needs a
@@ -62,9 +122,29 @@ void MainComponent::addPluginToChain(int row)
     leftColumn.showEffectChainTab();
 }
 
-void MainComponent::selectChainSlot(int index)
+void MainComponent::addConditionalSlotToChain()
 {
-    if (! juce::isPositiveAndBelow(index, pluginChain.size()) || index == selectedChainSlot)
+    // Same "nothing to process without an image" guard as addPluginToChain().
+    if (workingImage == nullptr)
+        return;
+
+    pluginChain.push_back(ConditionalChainSlot {});
+
+    setStatus("Added a condition to the chain.");
+
+    refreshEffectChainPanel();
+    refreshLivePreview();
+
+    leftColumn.showEffectChainTab();
+}
+
+void MainComponent::selectChainSlot(ChainPath path)
+{
+    if (selectedChainSlot.has_value() && *selectedChainSlot == path)
+        return;
+
+    auto* slotPtr = resolveChainSlot(path);
+    if (slotPtr == nullptr)
         return;
 
     if (headerEditorPanel != nullptr)
@@ -73,7 +153,7 @@ void MainComponent::selectChainSlot(int index)
         return;
     }
 
-    auto& slot = pluginChain[(size_t) index];
+    auto& slot = *slotPtr;
     auto& plugin = *slot.plugin;
 
     auto* editor = plugin.hasEditor() ? plugin.createEditorIfNeeded()
@@ -89,8 +169,9 @@ void MainComponent::selectChainSlot(int index)
     // while its editor is mounted -- write them back into ChainSlot::ramps
     // before tearing that panel down, so they aren't lost just because a
     // different slot was selected.
-    if (selectedChainSlot >= 0 && pluginEditorPanel != nullptr)
-        pluginChain[(size_t) selectedChainSlot].ramps = pluginEditorPanel->getParameterRamps();
+    if (selectedChainSlot.has_value() && pluginEditorPanel != nullptr)
+        if (auto* outgoing = resolveChainSlot(*selectedChainSlot))
+            outgoing->ramps = pluginEditorPanel->getParameterRamps();
 
     // Defensive, matching the MeldaProduction dead-man's-pedal precedent
     // already in PROJECT.md: some third-party plugins do unsafe things
@@ -104,7 +185,7 @@ void MainComponent::selectChainSlot(int index)
     pluginEditorWindow.reset();
     pluginEditorPanel.reset();
 
-    selectedChainSlot = index;
+    selectedChainSlot = path;
 
     pluginEditorPanel = std::make_unique<PluginEditorPanel>(std::unique_ptr<juce::AudioProcessorEditor>(editor), plugin,
     [this]
@@ -165,14 +246,15 @@ void MainComponent::selectChainSlot(int index)
 
 void MainComponent::deselectChainSlot()
 {
-    if (selectedChainSlot < 0)
+    if (! selectedChainSlot.has_value())
         return;
 
     // Same write-back selectChainSlot() does before switching to a different
     // slot -- deselecting doesn't discard anything, it just stops showing an
     // editor for this one; the slot stays in the chain exactly as it was.
     if (pluginEditorPanel != nullptr)
-        pluginChain[(size_t) selectedChainSlot].ramps = pluginEditorPanel->getParameterRamps();
+        if (auto* outgoing = resolveChainSlot(*selectedChainSlot))
+            outgoing->ramps = pluginEditorPanel->getParameterRamps();
 
     // Same defensive wait selectChainSlot()/removeChainSlot() already use
     // before tearing down an editor -- see their comments for the
@@ -184,7 +266,7 @@ void MainComponent::deselectChainSlot()
     pluginEditorPanel.reset();
     pluginParamWatcher.attachTo(nullptr);
 
-    selectedChainSlot = -1;
+    selectedChainSlot.reset();
 
     imagePreview.setFastResampling(false);
 
@@ -199,32 +281,47 @@ void MainComponent::deselectChainSlot()
     // being live-previewed.
 }
 
-void MainComponent::removeChainSlot(int index)
+void MainComponent::removeChainSlot(ChainPath path)
 {
-    if (! juce::isPositiveAndBelow(index, pluginChain.size()))
-        return;
+    const bool isTopLevel = ! path.branch.has_value();
+    std::vector<ChainSlot>* container = isTopLevel ? nullptr : resolveBranchContainer(path.topIndex, *path.branch);
 
-    // An empty chain is defined as "no session open" -- delegate entirely to
-    // the same teardown Cancel already uses rather than duplicating its
-    // cache/spinner/menu bookkeeping here.
-    if (pluginChain.size() == 1)
+    if (isTopLevel)
     {
-        endLivePreviewSession(false);
+        if (! juce::isPositiveAndBelow(path.topIndex, pluginChain.size()))
+            return;
+
+        // An empty top-level chain is defined as "no session open" --
+        // delegate entirely to the same teardown Cancel already uses rather
+        // than duplicating its cache/spinner/menu bookkeeping here. Removing
+        // the last slot in a *branch* doesn't hit this: an empty branch is
+        // just a documented pass-through state, not a lost session.
+        if (pluginChain.size() == 1)
+        {
+            endLivePreviewSession(false);
+            return;
+        }
+    }
+    else if (container == nullptr || ! juce::isPositiveAndBelow(path.branchIndex, container->size()))
+    {
         return;
     }
 
-    const bool removingSelected = (index == selectedChainSlot);
+    // True both for an exact path match (removing the selected top-level slot,
+    // or the selected branch slot) AND for removing a top-level
+    // ConditionalChainSlot that CONTAINS the currently-selected branch slot --
+    // that erase below destroys the whole entry, including whichever branch
+    // slot the editor/watcher are currently pointed at, so the teardown below
+    // must run in that case too, not just on an exact path match.
+    const bool removingSelected = selectedChainSlot.has_value()
+        && (*selectedChainSlot == path || (isTopLevel && selectedChainSlot->topIndex == path.topIndex));
 
     // Must happen before tearing down the editor (if this is the selected
     // slot) or releasing this slot's plugin below: an in-flight worker pass
     // may still be inside that plugin's processBlock(), and per the
     // MeldaProduction precedent already in PROJECT.md, some third-party
     // plugins do unsafe things internally when their editor/UI is torn down
-    // concurrently with their own audio thread -- same ordering
-    // selectChainSlot()/endLivePreviewSession() already use, kept consistent
-    // here rather than releasing/destroying first and waiting second.
-    // Reordering (moveChainSlot) doesn't need this -- nothing is destroyed
-    // there -- but removal does.
+    // concurrently with their own audio thread.
     livePreviewWorker.waitUntilIdle();
 
     // The removed slot's live ramps (if it happened to be the selected one)
@@ -238,23 +335,68 @@ void MainComponent::removeChainSlot(int index)
         pluginParamWatcher.attachTo(nullptr);
     }
 
-    if (pluginChain[(size_t) index].plugin != nullptr)
-        pluginChain[(size_t) index].plugin->releaseResources();
+    if (isTopLevel)
+    {
+        auto& entry = pluginChain[(size_t) path.topIndex];
 
-    pluginChain.erase(pluginChain.begin() + index);
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            if (slot->plugin != nullptr)
+                slot->plugin->releaseResources();
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
+            for (auto& s : conditional.branchA)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+            for (auto& s : conditional.branchB)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+        }
+
+        pluginChain.erase(pluginChain.begin() + path.topIndex);
+    }
+    else
+    {
+        auto& slot = (*container)[(size_t) path.branchIndex];
+        if (slot.plugin != nullptr)
+            slot.plugin->releaseResources();
+        container->erase(container->begin() + path.branchIndex);
+    }
 
     if (removingSelected)
     {
         // Reset first so selectChainSlot() below doesn't mistake this for a
-        // no-op reselection (it early-returns on index == selectedChainSlot).
-        selectedChainSlot = -1;
-        selectChainSlot(juce::jmin(index, (int) pluginChain.size() - 1));
+        // no-op reselection (it early-returns on an identical path).
+        selectedChainSlot.reset();
+
+        if (isTopLevel)
+        {
+            if (! pluginChain.empty())
+                selectChainSlot({ juce::jmin(path.topIndex, (int) pluginChain.size() - 1), std::nullopt, -1 });
+        }
+        else if (container != nullptr && ! container->empty())
+        {
+            selectChainSlot({ path.topIndex, path.branch, juce::jmin(path.branchIndex, (int) container->size() - 1) });
+        }
+
+        // If neither branch resolves to a plugin to select (e.g. the branch is
+        // now empty, or the fallback landed on a ConditionalChainSlot with no
+        // single editor), selectedChainSlot is correctly left as nullopt --
+        // "chain open, nothing selected" is an already-supported state.
     }
-    else if (index < selectedChainSlot)
+    else if (selectedChainSlot.has_value())
     {
-        --selectedChainSlot; // same logical slot, shifted down by the erase -- no editor swap needed
+        auto& sel = *selectedChainSlot;
+
+        if (isTopLevel && sel.topIndex > path.topIndex)
+            --sel.topIndex; // same logical slot, shifted down by the erase -- no editor swap needed
+        else if (! isTopLevel && sel.topIndex == path.topIndex && sel.branch == path.branch
+                 && sel.branchIndex > path.branchIndex)
+            --sel.branchIndex;
+        // Every other case: no change needed.
     }
-    // index > selectedChainSlot: no change needed.
 
     refreshLivePreview();
     refreshEffectChainPanel();
@@ -271,8 +413,8 @@ void MainComponent::moveChainSlot(int from, int to)
     // can request an arbitrary target, not just an adjacent swap: moving slot 0
     // to the end of a 4-slot chain must shift 1/2/3 down by one, which a swap
     // would get wrong. Safe without flushing the live-preview worker: this only
-    // relocates the ChainSlot/unique_ptr *value*, never the heap-allocated
-    // AudioPluginInstance it owns, and the vector never grows past its prior
+    // relocates the ChainEntry/unique_ptr *value*, never the heap-allocated
+    // AudioPluginInstance(s) it owns, and the vector never grows past its prior
     // size -- so any raw AudioPluginInstance* already captured in an in-flight
     // request stays valid regardless of where in pluginChain it now sits.
     auto moved = std::move(pluginChain[(size_t) from]);
@@ -282,24 +424,79 @@ void MainComponent::moveChainSlot(int from, int to)
     // to is "index in the resulting array" -- same convention removeChainSlot's
     // own selectedChainSlot shift already uses. Every slot strictly between
     // from and to (exclusive/inclusive as appropriate) shifts by one to make
-    // room for the moved slot; anything outside that range is untouched.
-    if (selectedChainSlot == from)
-        selectedChainSlot = to;
-    else if (from < to && selectedChainSlot > from && selectedChainSlot <= to)
-        --selectedChainSlot;
-    else if (to < from && selectedChainSlot >= to && selectedChainSlot < from)
-        ++selectedChainSlot;
+    // room for the moved slot; anything outside that range is untouched. Only
+    // topIndex ever needs adjusting here -- a selection nested inside a
+    // branch travels with its parent conditional slot's topIndex
+    // automatically, since moving the whole conditional slot never touches
+    // its internal branch indices.
+    if (selectedChainSlot.has_value())
+    {
+        auto& sel = *selectedChainSlot;
+
+        if (sel.topIndex == from)
+            sel.topIndex = to;
+        else if (from < to && sel.topIndex > from && sel.topIndex <= to)
+            --sel.topIndex;
+        else if (to < from && sel.topIndex >= to && sel.topIndex < from)
+            ++sel.topIndex;
+    }
 
     refreshLivePreview();
     refreshEffectChainPanel();
 }
 
-void MainComponent::toggleChainSlotBypass(int index)
+void MainComponent::moveBranchSlot(int conditionalIndex, Branch branch, int from, int to)
 {
-    if (! juce::isPositiveAndBelow(index, pluginChain.size()))
+    auto* container = resolveBranchContainer(conditionalIndex, branch);
+    if (container == nullptr)
+        return;
+    if (! juce::isPositiveAndBelow(from, container->size()) || ! juce::isPositiveAndBelow(to, container->size()))
+        return;
+    if (from == to)
         return;
 
-    pluginChain[(size_t) index].bypassed = ! pluginChain[(size_t) index].bypassed;
+    auto moved = std::move((*container)[(size_t) from]);
+    container->erase(container->begin() + from);
+    container->insert(container->begin() + to, std::move(moved));
+
+    if (selectedChainSlot.has_value() && selectedChainSlot->topIndex == conditionalIndex
+        && selectedChainSlot->branch == branch)
+    {
+        auto& idx = selectedChainSlot->branchIndex;
+
+        if (idx == from)
+            idx = to;
+        else if (from < to && idx > from && idx <= to)
+            --idx;
+        else if (to < from && idx >= to && idx < from)
+            ++idx;
+    }
+
+    refreshLivePreview();
+    refreshEffectChainPanel();
+}
+
+void MainComponent::toggleChainSlotBypass(ChainPath path)
+{
+    if (! juce::isPositiveAndBelow(path.topIndex, pluginChain.size()))
+        return;
+
+    if (! path.branch.has_value())
+    {
+        // ChainSlot and ConditionalChainSlot both have a `bypassed` field of
+        // the same name -- one generic visitor covers either alternative,
+        // toggling the whole conditional slot (both branches skipped) when
+        // this path names one.
+        std::visit([](auto& entry) { entry.bypassed = ! entry.bypassed; }, pluginChain[(size_t) path.topIndex]);
+    }
+    else
+    {
+        auto* slot = resolveChainSlot(path);
+        if (slot == nullptr)
+            return;
+
+        slot->bypassed = ! slot->bypassed;
+    }
 
     refreshLivePreview();
     refreshEffectChainPanel();
@@ -310,69 +507,161 @@ void MainComponent::refreshEffectChainPanel()
     effectChainPanel.rebuild(pluginChain, selectedChainSlot);
 }
 
-std::vector<MainComponent::ChainSlotSnapshot> MainComponent::captureChainSnapshot() const
+void MainComponent::setConditionalSlotCondition(int topIndex, PixelCondition condition)
 {
-    std::vector<ChainSlotSnapshot> result;
+    if (! juce::isPositiveAndBelow(topIndex, pluginChain.size()))
+        return;
+
+    auto* conditional = std::get_if<ConditionalChainSlot>(&pluginChain[(size_t) topIndex]);
+    if (conditional == nullptr)
+        return;
+
+    conditional->condition = condition;
+    refreshLivePreview();
+}
+
+void MainComponent::setConditionalSlotMode(int topIndex, CompositingMode mode)
+{
+    if (! juce::isPositiveAndBelow(topIndex, pluginChain.size()))
+        return;
+
+    auto* conditional = std::get_if<ConditionalChainSlot>(&pluginChain[(size_t) topIndex]);
+    if (conditional == nullptr)
+        return;
+
+    conditional->mode = mode;
+    refreshLivePreview();
+}
+
+MainComponent::ChainSlotSnapshot MainComponent::captureOneSlotSnapshot(const ChainSlot& slot, const ChainPath& path) const
+{
+    ChainSlotSnapshot snapshot;
+    snapshot.description = slot.plugin->getPluginDescription();
+    slot.plugin->getStateInformation(snapshot.pluginState); // same call savePresetClicked() below already makes
+    snapshot.bypassed = slot.bypassed;
+
+    // The currently-selected slot's live ramps live in
+    // pluginEditorPanel's ParameterAutomationPanel until a different
+    // slot is selected (or deselected) writes them back into
+    // ChainSlot::ramps -- same live-vs-frozen precedence already used
+    // when building a LivePreviewWorker::Request, so the snapshot
+    // matches whatever was actually last rendered.
+    snapshot.ramps = (selectedChainSlot.has_value() && *selectedChainSlot == path && pluginEditorPanel != nullptr)
+                          ? pluginEditorPanel->getParameterRamps()
+                          : slot.ramps;
+
+    return snapshot;
+}
+
+std::vector<MainComponent::ChainEntrySnapshot> MainComponent::captureChainSnapshot() const
+{
+    std::vector<ChainEntrySnapshot> result;
 
     for (int i = 0; i < (int) pluginChain.size(); ++i)
     {
-        const auto& slot = pluginChain[(size_t) i];
+        auto& entry = pluginChain[(size_t) i];
 
-        ChainSlotSnapshot snapshot;
-        snapshot.description = slot.plugin->getPluginDescription();
-        slot.plugin->getStateInformation(snapshot.pluginState); // same call savePresetClicked() below already makes
-        snapshot.bypassed = slot.bypassed;
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            result.push_back(captureOneSlotSnapshot(*slot, { i, std::nullopt, -1 }));
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
 
-        // The currently-selected slot's live ramps live in
-        // pluginEditorPanel's ParameterAutomationPanel until a different
-        // slot is selected (or deselected) writes them back into
-        // ChainSlot::ramps -- same live-vs-frozen precedence already used
-        // when building a LivePreviewWorker::Request below, so the
-        // snapshot matches whatever was actually last rendered.
-        snapshot.ramps = (i == selectedChainSlot && pluginEditorPanel != nullptr)
-                              ? pluginEditorPanel->getParameterRamps()
-                              : slot.ramps;
+            ConditionalChainSlotSnapshot condSnapshot;
+            condSnapshot.condition = conditional.condition;
+            condSnapshot.mode = conditional.mode;
+            condSnapshot.bypassed = conditional.bypassed;
 
-        result.push_back(std::move(snapshot));
+            for (int j = 0; j < (int) conditional.branchA.size(); ++j)
+                condSnapshot.branchA.push_back(captureOneSlotSnapshot(conditional.branchA[(size_t) j], { i, Branch::a, j }));
+            for (int j = 0; j < (int) conditional.branchB.size(); ++j)
+                condSnapshot.branchB.push_back(captureOneSlotSnapshot(conditional.branchB[(size_t) j], { i, Branch::b, j }));
+
+            result.push_back(std::move(condSnapshot));
+        }
     }
 
     return result;
 }
 
-void MainComponent::restoreChainFromSnapshot(const std::vector<ChainSlotSnapshot>& snapshot)
+std::optional<ChainSlot> MainComponent::instantiateSlotFromSnapshot(const ChainSlotSnapshot& entry, juce::StringArray& failedNames)
+{
+    juce::String errorMessage;
+    auto plugin = PluginHost::createInstance(scanner.getFormatManager(), entry.description,
+                                               sampleRate, blockSize, errorMessage);
+    if (plugin == nullptr)
+    {
+        failedNames.add(entry.description.name);
+        return std::nullopt;
+    }
+
+    plugin->setStateInformation(entry.pluginState.getData(), (int) entry.pluginState.getSize());
+
+    ChainSlot slot;
+    slot.plugin = std::move(plugin);
+    slot.ramps = entry.ramps;
+    slot.bypassed = entry.bypassed;
+    return slot;
+}
+
+void MainComponent::restoreChainFromSnapshot(const std::vector<ChainEntrySnapshot>& snapshot)
 {
     // Defensive -- always empty here in practice, since Undo/Redo are only
     // ever active while pluginChain.empty() already holds (see
     // getCommandInfo()'s undoCommand/redoCommand cases), but this mirrors
     // endLivePreviewSession()'s own teardown rather than assuming.
-    for (auto& slot : pluginChain)
-        if (slot.plugin != nullptr)
-            slot.plugin->releaseResources();
+    for (auto& entry : pluginChain)
+    {
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            if (slot->plugin != nullptr)
+                slot->plugin->releaseResources();
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
+            for (auto& s : conditional.branchA)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+            for (auto& s : conditional.branchB)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+        }
+    }
     pluginChain.clear();
 
     juce::StringArray failedNames;
 
-    for (const auto& entry : snapshot)
+    for (const auto& entrySnapshot : snapshot)
     {
-        juce::String errorMessage;
-        auto plugin = PluginHost::createInstance(scanner.getFormatManager(), entry.description,
-                                                   sampleRate, blockSize, errorMessage);
-        if (plugin == nullptr)
+        if (auto* slotSnapshot = std::get_if<ChainSlotSnapshot>(&entrySnapshot))
         {
-            failedNames.add(entry.description.name);
-            continue;
+            if (auto slot = instantiateSlotFromSnapshot(*slotSnapshot, failedNames))
+                pluginChain.push_back(std::move(*slot));
         }
+        else
+        {
+            auto& condSnapshot = std::get<ConditionalChainSlotSnapshot>(entrySnapshot);
 
-        plugin->setStateInformation(entry.pluginState.getData(), (int) entry.pluginState.getSize());
+            ConditionalChainSlot conditional;
+            conditional.condition = condSnapshot.condition;
+            conditional.mode = condSnapshot.mode;
+            conditional.bypassed = condSnapshot.bypassed;
 
-        ChainSlot slot;
-        slot.plugin = std::move(plugin);
-        slot.ramps = entry.ramps;
-        slot.bypassed = entry.bypassed;
-        pluginChain.push_back(std::move(slot));
+            for (auto& s : condSnapshot.branchA)
+                if (auto slot = instantiateSlotFromSnapshot(s, failedNames))
+                    conditional.branchA.push_back(std::move(*slot));
+            for (auto& s : condSnapshot.branchB)
+                if (auto slot = instantiateSlotFromSnapshot(s, failedNames))
+                    conditional.branchB.push_back(std::move(*slot));
+
+            pluginChain.push_back(std::move(conditional));
+        }
     }
 
-    selectedChainSlot = -1; // matches deselectChainSlot()'s "chain open, nothing selected" state
+    selectedChainSlot.reset(); // matches deselectChainSlot()'s "chain open, nothing selected" state
 
     updatePluginListEnablement();
     menuModel.menuItemsChanged();
@@ -389,10 +678,14 @@ void MainComponent::restoreChainFromSnapshot(const std::vector<ChainSlotSnapshot
 
 void MainComponent::savePresetClicked()
 {
-    if (! juce::isPositiveAndBelow(selectedChainSlot, pluginChain.size()))
+    if (! selectedChainSlot.has_value())
         return;
 
-    auto& plugin = *pluginChain[(size_t) selectedChainSlot].plugin;
+    auto* slot = resolveChainSlot(*selectedChainSlot);
+    if (slot == nullptr)
+        return;
+
+    auto& plugin = *slot->plugin;
 
     juce::MemoryBlock state;
     plugin.getStateInformation(state);
@@ -451,29 +744,57 @@ void MainComponent::refreshLivePreview()
     // recompute below takes to come back.
     updateHighlightOverlay(*workingImage, scope);
 
+    // Converts one plain plugin slot into its LivePreviewWorker-facing
+    // request, sourcing ramps from whichever is actually live right now: the
+    // selected slot's ramps are still live in its open ParameterAutomationPanel
+    // -- read them from there, not from ChainSlot::ramps (only refreshed when
+    // a *different* slot is selected, or when deselected entirely). Every
+    // other slot's ramps (and this one's, if nothing is currently selected)
+    // are exactly its own frozen ChainSlot::ramps.
+    auto convertSlot = [this](const ChainSlot& slot, const ChainPath& path) -> LivePreviewWorker::ChainSlotRequest
+    {
+        LivePreviewWorker::ChainSlotRequest request;
+        request.plugin = slot.plugin.get();
+        request.bypassed = slot.bypassed;
+        request.ramps = (selectedChainSlot.has_value() && *selectedChainSlot == path && pluginEditorPanel != nullptr)
+                             ? pluginEditorPanel->getParameterRamps()
+                             : slot.ramps;
+        return request;
+    };
+
+    auto convertBranch = [&convertSlot](const std::vector<ChainSlot>& branchSlots, int topIndex, Branch which)
+    {
+        std::vector<LivePreviewWorker::ChainSlotRequest> result;
+        result.reserve(branchSlots.size());
+        for (int j = 0; j < (int) branchSlots.size(); ++j)
+            result.push_back(convertSlot(branchSlots[(size_t) j], { topIndex, which, j }));
+        return result;
+    };
+
     LivePreviewWorker::Request request;
     request.chain.reserve(pluginChain.size());
 
     for (int i = 0; i < (int) pluginChain.size(); ++i)
     {
-        auto& slot = pluginChain[(size_t) i];
+        auto& entry = pluginChain[(size_t) i];
 
-        LivePreviewWorker::ChainSlotRequest slotRequest;
-        slotRequest.plugin = slot.plugin.get();
-        slotRequest.bypassed = slot.bypassed;
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            request.chain.push_back(convertSlot(*slot, { i, std::nullopt, -1 }));
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
 
-        // The selected slot's ramps are still live in its open
-        // ParameterAutomationPanel -- read them from there, not from
-        // ChainSlot::ramps (only refreshed when a *different* slot is
-        // selected, or when deselected entirely -- see selectChainSlot()/
-        // deselectChainSlot()). Every other slot's ramps (and this one's, if
-        // nothing is currently selected -- pluginEditorPanel is then null)
-        // are exactly its own frozen ChainSlot::ramps. Getting this backwards
-        // means edits on the currently-open Automation tab would never reach
-        // the live preview until you clicked away from that slot.
-        slotRequest.ramps = (i == selectedChainSlot && pluginEditorPanel != nullptr) ? pluginEditorPanel->getParameterRamps() : slot.ramps;
+            LivePreviewWorker::ConditionalChainSlotRequest condRequest;
+            condRequest.condition = conditional.condition;
+            condRequest.mode = conditional.mode;
+            condRequest.bypassed = conditional.bypassed;
+            condRequest.branchA = convertBranch(conditional.branchA, i, Branch::a);
+            condRequest.branchB = convertBranch(conditional.branchB, i, Branch::b);
 
-        request.chain.push_back(std::move(slotRequest));
+            request.chain.push_back(std::move(condRequest));
+        }
     }
 
     request.image = workingImage.get();
@@ -590,11 +911,26 @@ void MainComponent::endLivePreviewSession(bool commitToWorkingImage)
     // Apply and Cancel both fully tear down the *whole* chain, not just the
     // currently-selected slot -- an empty chain is what "no session open"
     // means throughout this class (see pluginChain's own doc comment).
-    for (auto& slot : pluginChain)
-        if (slot.plugin != nullptr)
-            slot.plugin->releaseResources();
+    for (auto& entry : pluginChain)
+    {
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            if (slot->plugin != nullptr)
+                slot->plugin->releaseResources();
+        }
+        else
+        {
+            auto& conditional = std::get<ConditionalChainSlot>(entry);
+            for (auto& s : conditional.branchA)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+            for (auto& s : conditional.branchB)
+                if (s.plugin != nullptr)
+                    s.plugin->releaseResources();
+        }
+    }
     pluginChain.clear();
-    selectedChainSlot = -1;
+    selectedChainSlot.reset();
 
     updatePluginListEnablement();
     menuModel.menuItemsChanged();
@@ -649,9 +985,19 @@ void MainComponent::applyClicked()
     const bool hadSelection = ! scope.range.isEmpty();
 
     juce::StringArray activeNames;
-    for (auto& slot : pluginChain)
-        if (! slot.bypassed && slot.plugin != nullptr)
-            activeNames.add(slot.plugin->getName());
+    for (auto& entry : pluginChain)
+    {
+        if (auto* slot = std::get_if<ChainSlot>(&entry))
+        {
+            if (! slot->bypassed && slot->plugin != nullptr)
+                activeNames.add(slot->plugin->getName());
+        }
+        else if (auto* conditional = std::get_if<ConditionalChainSlot>(&entry))
+        {
+            if (! conditional->bypassed)
+                activeNames.add("Condition");
+        }
+    }
 
     const juce::String chainDescription = activeNames.isEmpty() ? juce::String("(every effect bypassed)")
                                                                   : activeNames.joinIntoString(" -> ");
@@ -667,14 +1013,19 @@ void MainComponent::applyClicked()
 // Wired to PluginEditorPanel's Cancel button: removes the currently selected
 // slot from the chain (as if it had never been added), leaving every other
 // slot untouched and still live. removeChainSlot() itself already handles
-// "this was the last slot" by delegating to endLivePreviewSession(false), so
-// that case still ends the whole session.
+// "this was the last top-level slot" by delegating to endLivePreviewSession(false),
+// so that case still ends the whole session.
 void MainComponent::cancelEditorClicked()
 {
-    if (selectedChainSlot < 0)
+    if (! selectedChainSlot.has_value())
         return;
 
-    const auto removedName = pluginChain[(size_t) selectedChainSlot].plugin->getName();
-    removeChainSlot(selectedChainSlot);
+    auto* slot = resolveChainSlot(*selectedChainSlot);
+    if (slot == nullptr)
+        return;
+
+    const auto removedName = slot->plugin->getName();
+    const auto path = *selectedChainSlot;
+    removeChainSlot(path);
     setStatus("Removed " + removedName + " from the chain.");
 }

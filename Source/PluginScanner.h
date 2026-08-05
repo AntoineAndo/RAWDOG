@@ -37,6 +37,13 @@ public:
     // Plugins" menu item) must check this before allowing another scanAll()
     // call - starting a second scan while one is running would replace
     // scanThread out from under the running thread.
+    //
+    // Deliberately backed by an explicit flag rather than
+    // scanThread->isThreadRunning(): the background thread has already
+    // exited by the time ScanThread::threadComplete() invokes onComplete, so
+    // isThreadRunning() alone would report false while onComplete is still
+    // executing - letting a reentrant scanAll() call replace scanThread out
+    // from under the threadComplete() call that's still running it.
     bool isScanning() const;
 
     // Attempts to load a previously-saved scan result from disk into
@@ -71,6 +78,10 @@ public:
 private:
     class ScanThread;
     std::unique_ptr<ScanThread> scanThread;
+
+    // See isScanning() - stays true through the completion callback, not
+    // just while scanThread->isThreadRunning().
+    bool scanInProgress = false;
 
     juce::AudioPluginFormatManager formatManager;
     juce::KnownPluginList knownPluginList;

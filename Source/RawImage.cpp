@@ -652,20 +652,30 @@ RawImage::HeaderEditResult RawImage::validateBmpHeaderFields(const BmpEditableHe
         // Warning-only: this app's own renderer already soft-clips out-of-range
         // byte offsets to black rather than crashing, so a header that declares
         // more pixel data than actually exists degrades gracefully - flag it,
-        // don't block it.
-        const int derivedChannels = juce::jmax(1, candidate.biBitCount / 8);
-        const int64_t rowStride64 = computeBmpRowStride(candidate.biWidth, derivedChannels);
-        const int64_t declaredHeight = std::abs((int64_t) candidate.biHeight);
-        const int64_t declaredPixelSize = rowStride64 * declaredHeight;
-        const int64_t availableAfterOffset = totalContentSize - (int64_t) candidate.bfOffBits;
+        // don't block it. Skipped when biBitCount itself is already out of
+        // range (blocking-errored below) since derivedChannels would be
+        // meaningless in that case.
+        if (candidate.biBitCount >= 0 && candidate.biBitCount <= 0xFFFF)
+        {
+            const int derivedChannels = juce::jmax(1, candidate.biBitCount / 8);
+            const int64_t rowStride64 = computeBmpRowStride(candidate.biWidth, derivedChannels);
+            const int64_t declaredHeight = std::abs((int64_t) candidate.biHeight);
+            const int64_t declaredPixelSize = rowStride64 * declaredHeight;
+            const int64_t availableAfterOffset = totalContentSize - (int64_t) candidate.bfOffBits;
 
-        if (declaredPixelSize > availableAfterOffset)
-            result.warnings.add("Declared pixel data (" + juce::String(declaredPixelSize) + " bytes) exceeds what's "
-                                 "actually available (" + juce::String(availableAfterOffset) + ") - the image will "
-                                 "render with black regions past the available bytes.");
+            if (declaredPixelSize > availableAfterOffset)
+                result.warnings.add("Declared pixel data (" + juce::String(declaredPixelSize) + " bytes) exceeds what's "
+                                     "actually available (" + juce::String(availableAfterOffset) + ") - the image will "
+                                     "render with black regions past the available bytes.");
+        }
     }
 
-    if (candidate.biBitCount != 24)
+    // BmpEditableHeaderFields keeps this as an int32_t specifically so an
+    // out-of-range entry lands here instead of getting silently truncated to
+    // fit the header's actual 16-bit field before validation ever sees it.
+    if (candidate.biBitCount < 0 || candidate.biBitCount > 0xFFFF)
+        result.blockingErrors.add("Bit depth must be between 0 and 65535 (it's stored as a 16-bit header field).");
+    else if (candidate.biBitCount != 24)
         result.warnings.add("Bit depth " + juce::String(candidate.biBitCount) + " is not 24-bit - this app doesn't "
                              "actually decode other bit depths, so the render will look wrong (glitch, not a crash).");
 
@@ -729,7 +739,7 @@ RawImage::HeaderEditResult RawImage::applyBmpHeaderFields(const BmpEditableHeade
     writeU32LE(bytes + 10, candidate.bfOffBits);
     writeI32LE(bytes + 18, candidate.biWidth);
     writeI32LE(bytes + 22, candidate.biHeight);
-    writeU16LE(bytes + 28, candidate.biBitCount);
+    writeU16LE(bytes + 28, (uint16_t) candidate.biBitCount); // in-range, guaranteed by the validateBmpHeaderFields() gate above
     writeU32LE(bytes + 30, candidate.biCompression);
 
     deriveBmpGeometryFromHeaderBytes();
@@ -894,7 +904,8 @@ juce::MemoryBlock RawImage::previewWithChannelBytes(Channel channel, const juce:
     return result;
 }
 
-void RawImage::remapPixelRowOrder(uint8_t* rawBytes, size_t rawSize, uint8_t* canonicalBytes, bool toCanonical) const
+void RawImage::remapPixelRowOrder(uint8_t* rawBytes, size_t rawSize,
+                                   uint8_t* canonicalBytes, size_t canonicalSize, bool toCanonical) const
 {
     const int rowBytes = width * channels;
 
@@ -903,16 +914,23 @@ void RawImage::remapPixelRowOrder(uint8_t* rawBytes, size_t rawSize, uint8_t* ca
         const int sourceRow = bottomUp ? (height - 1 - y) : y;
         const size_t rawRowOffset = (size_t) sourceRow * (size_t) rowStride;
         const size_t canonicalRowOffset = (size_t) y * (size_t) rowBytes;
-        const size_t copyLength = juce::jmin((size_t) rowBytes,
-                                              rawRowOffset < rawSize ? rawSize - rawRowOffset : (size_t) 0);
+
+        const size_t rawAvailable = rawRowOffset < rawSize ? rawSize - rawRowOffset : (size_t) 0;
+        const size_t canonicalAvailable = canonicalRowOffset < canonicalSize ? canonicalSize - canonicalRowOffset : (size_t) 0;
+        const size_t copyLength = juce::jmin((size_t) rowBytes, rawAvailable, canonicalAvailable);
 
         if (toCanonical)
         {
             if (copyLength > 0)
                 std::memcpy(canonicalBytes + canonicalRowOffset, rawBytes + rawRowOffset, copyLength);
 
-            if (copyLength < (size_t) rowBytes) // out-of-bounds tail (malformed/truncated source): leave at 0
-                std::memset(canonicalBytes + canonicalRowOffset + copyLength, 0, (size_t) rowBytes - copyLength);
+            // Out-of-bounds tail (malformed/truncated source): leave at 0, but
+            // never past canonicalAvailable - canonicalBytes isn't guaranteed
+            // to be a full row wide in the splice-back direction, so the zero
+            // fill is bounded the same way the copy above is.
+            const size_t tailLength = juce::jmin((size_t) rowBytes - copyLength, canonicalAvailable - copyLength);
+            if (tailLength > 0)
+                std::memset(canonicalBytes + canonicalRowOffset + copyLength, 0, tailLength);
         }
         else if (copyLength > 0)
         {
@@ -932,7 +950,8 @@ void RawImage::ensureVisualOrderUpToDate() const
     // Read-only direction (toCanonical): remapPixelRowOrder never writes through
     // rawBytes in this direction, so casting away pixelBytes' constness here is safe.
     auto* rawBytes = const_cast<uint8_t*>(static_cast<const uint8_t*>(pixelBytes.getData()));
-    remapPixelRowOrder(rawBytes, pixelBytes.getSize(), static_cast<uint8_t*>(visualOrderedPixelBytes.getData()), true);
+    remapPixelRowOrder(rawBytes, pixelBytes.getSize(),
+                        static_cast<uint8_t*>(visualOrderedPixelBytes.getData()), canonicalSize, true);
 
     visualOrderDirty = false;
 }
@@ -948,7 +967,8 @@ void RawImage::applyVisualOrderedBytes(const juce::MemoryBlock& newVisualOrderBy
     // Splice-back direction only reads newVisualOrderBytes and writes pixelBytes,
     // so casting away its constness here is safe.
     auto* canonicalBytes = const_cast<uint8_t*>(static_cast<const uint8_t*>(newVisualOrderBytes.getData()));
-    remapPixelRowOrder(static_cast<uint8_t*>(pixelBytes.getData()), pixelBytes.getSize(), canonicalBytes, false);
+    remapPixelRowOrder(static_cast<uint8_t*>(pixelBytes.getData()), pixelBytes.getSize(),
+                        canonicalBytes, newVisualOrderBytes.getSize(), false);
 
     // Unlike applyChannelBytes()'s direct cache update, don't trust
     // newVisualOrderBytes verbatim as the new cache: if pixelBytes is shorter
@@ -967,7 +987,8 @@ juce::MemoryBlock RawImage::previewWithVisualOrderedBytes(const juce::MemoryBloc
     juce::MemoryBlock result(pixelBytes);
 
     auto* canonicalBytes = const_cast<uint8_t*>(static_cast<const uint8_t*>(newVisualOrderBytes.getData()));
-    remapPixelRowOrder(static_cast<uint8_t*>(result.getData()), result.getSize(), canonicalBytes, false);
+    remapPixelRowOrder(static_cast<uint8_t*>(result.getData()), result.getSize(),
+                        canonicalBytes, newVisualOrderBytes.getSize(), false);
 
     return result;
 }

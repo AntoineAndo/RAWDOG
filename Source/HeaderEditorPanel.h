@@ -133,7 +133,12 @@ private:
             fields.bfOffBits = (uint32_t) juce::jmax(0, offBitsEditor.getText().getIntValue());
             fields.biWidth = widthEditor.getText().getIntValue();
             fields.biHeight = heightEditor.getText().getIntValue();
-            fields.biBitCount = (uint16_t) juce::jmax(0, bitCountEditor.getText().getIntValue());
+            // No clamp here, matching biWidth/biHeight below: an out-of-range
+            // entry (BmpEditableHeaderFields::biBitCount is int32_t, wider than
+            // the header's actual 16-bit field) reaches validateBmpHeaderFields()
+            // intact so it's rejected with visible feedback instead of silently
+            // wrapping into a different, valid-looking value.
+            fields.biBitCount = bitCountEditor.getText().getIntValue();
             fields.biCompression = currentCompressionValue();
             return fields;
         }

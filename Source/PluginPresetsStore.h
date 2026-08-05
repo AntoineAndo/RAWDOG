@@ -2,6 +2,7 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <optional>
+#include "RawdogPropertiesFile.h"
 
 // Persists named parameter-state snapshots ("presets") per plugin, keyed by
 // juce::PluginDescription::createIdentifierString(), a stable plugin
@@ -27,7 +28,8 @@ public:
     // just obscure "which one did I save most recently".
     juce::StringArray getPresetNames(const juce::String& pluginIdentifier) const;
 
-    // Nullopt if no preset with that name exists for that plugin.
+    // Nullopt if no preset with that name exists for that plugin, or if its
+    // stored state fails to decode (e.g. a hand-edited settings file).
     std::optional<juce::MemoryBlock> getPresetState(const juce::String& pluginIdentifier,
                                                      const juce::String& presetName) const;
 
@@ -48,6 +50,6 @@ private:
 
     void save();
 
-    juce::ApplicationProperties appProperties;
+    juce::PropertiesFile& propertiesFile;
     juce::var presetsJson; // a JSON object: identifierString -> array of {name, state}
 };

@@ -1599,11 +1599,15 @@ purely as a structural refactor with no behavior change:
   `loadImageCommand`/`resetCommand`), so Cmd+S now works and the shortcut
   label renders next to the menu item automatically. The suggested export
   file also improved: a new `ExportSettingsStore` (its own
-  `juce::ApplicationProperties`-backed settings file — deliberately *not*
-  merged into `FavouritePluginsStore`/`PluginPresetsStore`'s shared
-  `"settings"` file, since those two already race each other as independent
-  `ApplicationProperties` instances over the same physical file, and this
-  avoids joining that latent bug) remembers the last folder exported to
+  `juce::PropertiesFile`-backed settings file, via `RawdogPropertiesFile` —
+  kept on its own suffix rather than joining `FavouritePluginsStore`/
+  `PluginPresetsStore`/`PluginEnablementStore`/`PluginDirectoriesStore`'s
+  shared `"settings"` file, though those four no longer race each other:
+  `RawdogPropertiesFile::forSuffix(...)` now hands out one shared
+  `juce::PropertiesFile` instance per suffix, so every store on the same
+  suffix reads/writes the same in-memory model instead of each owning an
+  independent `ApplicationProperties` that could clobber the others'
+  unsaved keys on save) remembers the last folder exported to
   across relaunches, falling back to `~/Documents` if nothing's been
   remembered yet or the remembered folder no longer exists (e.g. an
   unmounted drive). The suggested filename is now

@@ -2,6 +2,8 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <limits>
+
 // 8-bit unsigned PCM <-> float conversion, matching how raw pixel bytes are
 // stored (one unsigned byte per channel value). Fixed for now; a format
 // dropdown (mu-law, A-law, 16-bit, etc.) replaces this in a later milestone.
@@ -16,7 +18,13 @@ namespace SampleFormat
     inline juce::AudioBuffer<float> bytesToBuffer(const juce::MemoryBlock& bytes, Mode mode = Mode::bipolar)
     {
         const auto* data = static_cast<const juce::uint8*>(bytes.getData());
-        const int numSamples = (int) bytes.getSize();
+
+        // juce::AudioBuffer's sample count is an int, so a byte count beyond
+        // INT_MAX would silently truncate/wrap into a garbage or negative
+        // count below; assert loudly in debug builds and clamp in release
+        // ones rather than let that happen unnoticed.
+        jassert (bytes.getSize() <= (size_t) std::numeric_limits<int>::max());
+        const int numSamples = (int) juce::jmin(bytes.getSize(), (size_t) std::numeric_limits<int>::max());
 
         juce::AudioBuffer<float> buffer(1, numSamples);
         auto* out = buffer.getWritePointer(0);
@@ -32,7 +40,13 @@ namespace SampleFormat
     {
         auto* out = static_cast<juce::uint8*>(bytes.getData());
         const auto* in = buffer.getReadPointer(0);
-        const int numSamples = juce::jmin((int) bytes.getSize(), buffer.getNumSamples());
+
+        // Same INT_MAX hazard as bytesToBuffer(): clamp the byte count before
+        // it's mixed into jmin() with the (already-int) sample count, so an
+        // oversized MemoryBlock can't wrap negative and skip the loop.
+        jassert (bytes.getSize() <= (size_t) std::numeric_limits<int>::max());
+        const int clampedByteCount = (int) juce::jmin(bytes.getSize(), (size_t) std::numeric_limits<int>::max());
+        const int numSamples = juce::jmin(clampedByteCount, buffer.getNumSamples());
 
         // Clamping only once, after the scale/offset, is sufficient: since the
         // scale/offset is a monotonic increasing transform, clamping at that

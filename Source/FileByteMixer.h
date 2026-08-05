@@ -48,7 +48,9 @@ namespace FileByteMixer
 
         for (int i = start; i < end; ++i)
         {
-            const size_t modIndex = (size_t) ((float) (i - start) / clampedScale) % modSize;
+            // double exactly represents every integer offset this buffer size can reach;
+            // float only up to 2^24, which undershoots this app's documented ~78M-sample buffers.
+            const size_t modIndex = (size_t) ((double) (i - start) / clampedScale) % modSize;
             const juce::uint8 m = mod[modIndex];
             const juce::uint8 original = out[i];
             juce::uint8 mixed = original;

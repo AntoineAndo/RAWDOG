@@ -4,7 +4,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
+#include "ConditionalChainSlot.h"
 #include "ParameterAutomation.h"
 #include "RawImage.h"
 #include "SampleFormat.h"
@@ -60,6 +62,22 @@ public:
         bool bypassed = false;
     };
 
+    // A ConditionalChainSlot's DSP-relevant state, snapshotted the same way ChainSlotRequest
+    // is -- see MainComponent::refreshLivePreview(). branchA/branchB are plain
+    // std::vector<ChainSlotRequest> (not ChainEntryRequest below), so nesting a conditional
+    // slot inside a branch is impossible at the type level, not just disallowed by
+    // convention.
+    struct ConditionalChainSlotRequest
+    {
+        PixelCondition condition;
+        CompositingMode mode = CompositingMode::masked;
+        std::vector<ChainSlotRequest> branchA;
+        std::vector<ChainSlotRequest> branchB;
+        bool bypassed = false;
+    };
+
+    using ChainEntryRequest = std::variant<ChainSlotRequest, ConditionalChainSlotRequest>;
+
     struct Request
     {
         // DSP order (index 0 processed first). Rebuilt fresh every
@@ -67,7 +85,7 @@ public:
         // MainComponent::refreshLivePreview() for how each slot's `ramps` is
         // sourced (the selected slot's live, still-being-edited ramps vs.
         // every other slot's last-frozen ones).
-        std::vector<ChainSlotRequest> chain;
+        std::vector<ChainEntryRequest> chain;
 
         // The whole visual-order buffer, or one channel plane -- shared (not
         // copied per request) across an entire live-preview session, since

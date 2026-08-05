@@ -35,6 +35,7 @@ target_sources(RAWDOG PRIVATE
     Source/PluginHost.cpp
     Source/PluginsSettingsTab.cpp
     Source/RawCameraConverter.cpp
+    Source/RawdogPropertiesFile.cpp
     Source/RawImage.cpp
     Source/SettingsWindow.cpp
     Source/WaveformView.cpp
